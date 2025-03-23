@@ -1,9 +1,10 @@
 services:
-  # A Docker web service
   - type: web
-    name: fastapi-example
-    runtime: python
+    name: selfsound-backend
+    env: python
     plan: free
-    autoDeploy: false
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    dockerfilePath: ./Dockerfile  # Path to your Dockerfile
+    autoDeploy: false
+
