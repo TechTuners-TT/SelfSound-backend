@@ -1,1 +1,6 @@
 fastapi[all]
+supabase
+python-dotenv
+asyncpg
+databases
+pydantic-settings
