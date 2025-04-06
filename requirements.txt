@@ -1,6 +1,8 @@
-fastapi[all]
-supabase
+fastapi
+uvicorn
 python-dotenv
-asyncpg
-databases
-pydantic-settings
+httpx
+google-auth
+google-auth-oauthlib
+pyjwt
+supabase
