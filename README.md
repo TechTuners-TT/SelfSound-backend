@@ -1,6 +1,6 @@
 # Selfsound-backend
 
-![Banner](https://github.com/TechTuners-TT/backend/blob/main/docs/img/backend-banner.png?raw=true)
+![Banner](https://github.com/TechTuners-TT/backend/blob/main/docs/img/GitHub%20banner.png?raw=true)
 
 Backend development for SelfSound — a social network for musicians that merges the best of Threads and SoundCloud using FastAPI.
 
