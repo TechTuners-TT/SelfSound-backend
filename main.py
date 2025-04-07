@@ -1,7 +1,7 @@
 from fastapi import FastAPI
-# from routes.router import router as main_router
+from routes.router import router as main_router
 
-# app = FastAPI(
+app = FastAPI(
     title="FastAPI Google Auth Example",
     description="Backend for authenticating with Google using OAuth2",
     version="1.0.0",
