@@ -1,27 +1,92 @@
-# Deploy FastAPI on Render
+# Selfsound-backend
 
-Use this repo as a template to deploy a Python [FastAPI](https://fastapi.tiangolo.com) service on Render.
+![Banner](https://github.com/TechTuners-TT/backend/blob/main/docs/img/backend-banner.png?raw=true)
 
-See https://render.com/docs/deploy-fastapi or follow the steps below:
+Backend development for SelfSound — a social network for musicians that merges the best of Threads and SoundCloud using FastAPI.
 
-## Manual Steps
+---
+<div align="center">
+  <a href="docs/PROJECT-STRUCTURE.md">🧭 Backend structure</a> -
+  <a href="https://www.example.com">📖 About project</a> -
+  <a href="docs/CONTRIBUTING.md">🔧 How to contribute?</a>
+</div>
 
-1. You may use this repository directly or [create your own repository from this template](https://github.com/render-examples/fastapi/generate) if you'd like to customize the code.
-2. Create a new Web Service on Render.
-3. Specify the URL to your new repository or this repository.
-4. Render will automatically detect that you are deploying a Python service and use `pip` to download the dependencies.
-5. Specify the following as the Start Command.
+---
 
-    ```shell
-    uvicorn main:app --host 0.0.0.0 --port $PORT
-    ```
+# Table of Contents
 
-6. Click Create Web Service.
+1. [Requirements](#requirements)  
+   - [Setup Environment Variables](#setup-environment-variables)  
+2. [How to Start Working?](#how-to-start-working)  
+   - [Project Setup](#project-setup)  
+   - [Running the Server](#run-development-server)  
+3. [How to Contribute?](#how-to-contribute)  
+4. [Deployment](#deployment)  
+   - [Linting](#linting)  
+   - [Manual Deployment](#manual-deployment)  
+5. [Testing](#testing)  
+   - [Unit Tests](#run-unit-tests)  
+   - [Security Checks](#run-security-checks)  
 
-Or simply click:
+---
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/render-examples/fastapi)
+## Requirements
 
-## Thanks
+Before starting development or contributing to this backend, make sure you have:
 
-Thanks to [Harish](https://harishgarg.com) for the [inspiration to create a FastAPI quickstart for Render](https://twitter.com/harishkgarg/status/1435084018677010434) and for some sample code!
+- ✅ Python 3.10 or later  
+- ✅ `pip` & `venv` installed  
+- ✅ `.env` file with proper credentials and tokens  
+
+### Setup Environment Variables
+
+1. Ask the DevOps engineer for access to the project `.env` file.
+2. Place the `.env` file in the root directory of the backend project.
+3. Sample `.env` keys (example only):
+
+```env
+DATABASE_URL=your_database_url
+SECRET_KEY=your_secret_key
+SUPABASE_API_KEY=your_supabase_key
+```
+‼️ Do not commit this file or share its content publicly.
+
+---
+
+## How to start working?
+### Project Setup
+
+Create a virtual environment and install all dependencies:
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+---
+
+### Run Development Server
+
+To start the FastAPI development server with Uvicorn:
+
+```bash
+uvicorn main:app --reload
+```
+
+Then go to http://localhost:8000 to access the API.
+
+---
+
+## How to contribute?
+
+We welcome contributions! Before creating a PR, please check the [Contribution Guide](docs/CONTRIBUTING.md).
+
+### Testing
+## Run Unit Tests
+
+To run tests using pytest:
+
+```bash
+pytest
+```
