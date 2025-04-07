@@ -90,3 +90,11 @@ To run tests using pytest:
 ```bash
 pytest
 ```
+
+## Run Security Checks
+
+For secure coding practices, use Bandit and Safety:
+
+```bash
+bandit -r .
+```
