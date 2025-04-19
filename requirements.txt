@@ -6,3 +6,5 @@ google-auth
 google-auth-oauthlib
 pyjwt
 supabase
+python-multipart
+
