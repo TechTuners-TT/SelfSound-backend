@@ -1,20 +1,21 @@
-# Step 1: Use the official Python image
-FROM python:3.9-slim
+# Use official Python image
+FROM python:3.11-slim
 
-# Step 2: Set the working directory inside the container
+# Set the working directory in the container
 WORKDIR /app
 
-# Step 3: Copy the requirements.txt into the container
-COPY requirements.txt .
+# Install system dependencies if needed (e.g., libpq-dev if using PostgreSQL)
+RUN apt-get update && apt-get install -y gcc
 
-# Step 4: Install dependencies
+# Copy dependency list and install
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Step 5: Copy the entire application code into the container
+# Copy the rest of the code
 COPY . .
 
-# Step 6: Expose the port that the app will run on
+# Expose the port FastAPI will run on
 EXPOSE 8000
 
-# Step 7: Define the command to run the FastAPI app
+# Run the FastAPI app using uvicorn
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
