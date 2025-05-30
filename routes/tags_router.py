@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
-from jwt_handler import generate_jwt, decode_jwt
+from jwt_handler import decode_jwt
 from supabase_client import supabase
 
 
