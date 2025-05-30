@@ -4,3 +4,4 @@ class PostType(str, Enum):
     MEDIA = "media"
     AUDIO = "audio"
     NOTE = "note"
+    LYRICS = "lyrics"

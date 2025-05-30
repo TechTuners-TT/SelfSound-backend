@@ -2,12 +2,35 @@ version: '3.9'
 
 services:
   backend:
-    build: .
-    container_name: fastapi-backend
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi-backend-prod
     ports:
       - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=info
     env_file:
-      - .env
-    volumes:
-      - .:/app
-    restart: always
+      - .env.production  # Use production env file
+    # Remove volumes in production for security
+    # volumes:
+    #   - .:/app
+    restart: unless-stopped
+    networks:
+      - app-network
+
+    # Add resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+
+networks:
+  app-network:
+    driver: bridge
