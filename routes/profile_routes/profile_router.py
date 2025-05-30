@@ -63,8 +63,7 @@ async def update_avatar(
 
         # Construct public URL manually (more reliable)
         # You need to replace this with your actual Supabase project URL
-        Format : f"{SUPABASE_URL}/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
-
+        url = f"{SUPABASE_URL}/storage/v1/object/public/{BUCKET_NAME}/{file_path}"
         # Option 1: Get URL from supabase client (try different methods)
         try:
             if hasattr(supabase, 'supabase_url'):
