@@ -2,10 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, R
 from typing import Annotated, List, Optional
 import uuid
 import os
+import logging
 from datetime import datetime, timezone
 from routes.dependencies import get_verified_user
 from supabase_client import supabase
 import mimetypes
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/posts", tags=["Posts"])
 
@@ -32,7 +36,8 @@ async def get_optional_user(request: Request) -> Optional[dict]:
     """Get current user if authenticated, None if not"""
     try:
         return await get_verified_user(request)
-    except:
+    except Exception as e:
+        logger.debug(f"User not authenticated: {e}")
         return None
 
 
@@ -86,13 +91,9 @@ async def upload_file_to_storage(file: UploadFile, file_path: str) -> str:
         )
 
         # Check if upload was successful (newer Supabase client handling)
-        try:
-            if hasattr(response, 'error') and response.error:
-                print(f"Storage upload error: {response.error}")
-                raise HTTPException(status_code=500, detail="Failed to upload file to storage")
-        except Exception:
-            # If there's no error attribute, the upload was likely successful
-            pass
+        if hasattr(response, 'error') and response.error:
+            logger.error(f"Storage upload error: {response.error}")
+            raise HTTPException(status_code=500, detail="Failed to upload file to storage")
 
         # Get public URL
         public_url = supabase.storage.from_(STORAGE_BUCKET).get_public_url(file_path)
@@ -105,7 +106,7 @@ async def upload_file_to_storage(file: UploadFile, file_path: str) -> str:
     except HTTPException:
         raise
     except Exception as e:
-        print(f"File upload error: {str(e)}")
+        logger.error(f"File upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
 
 
@@ -133,13 +134,9 @@ async def upload_audio_to_storage(file: UploadFile, file_path: str) -> str:
         )
 
         # Check if upload was successful
-        try:
-            if hasattr(response, 'error') and response.error:
-                print(f"Audio storage upload error: {response.error}")
-                raise HTTPException(status_code=500, detail="Failed to upload audio file to storage")
-        except Exception:
-            # If there's no error attribute, the upload was likely successful
-            pass
+        if hasattr(response, 'error') and response.error:
+            logger.error(f"Audio storage upload error: {response.error}")
+            raise HTTPException(status_code=500, detail="Failed to upload audio file to storage")
 
         # Get public URL
         public_url = supabase.storage.from_(AUDIO_STORAGE_BUCKET).get_public_url(file_path)
@@ -152,8 +149,18 @@ async def upload_audio_to_storage(file: UploadFile, file_path: str) -> str:
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Audio file upload error: {str(e)}")
+        logger.error(f"Audio file upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Audio file upload failed: {str(e)}")
+
+
+def cleanup_uploaded_files(file_paths: List[str], bucket: str = STORAGE_BUCKET):
+    """Helper function to clean up uploaded files on error"""
+    for file_path in file_paths:
+        try:
+            supabase.storage.from_(bucket).remove([file_path])
+            logger.info(f"Cleaned up file: {file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup file {file_path}: {e}")
 
 
 # IMPORTANT: Put specific routes BEFORE parameterized routes
@@ -215,9 +222,9 @@ async def create_media_post(
         try:
             post_response = supabase.table("posts").insert(post_data).execute()
             post_id = post_response.data[0]["id"]
-            print(f"Created post with ID: {post_id}")
+            logger.info(f"Created post with ID: {post_id}")
         except Exception as e:
-            print(f"Error creating post: {str(e)}")
+            logger.error(f"Error creating post: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to create post")
 
         # Upload files and create media records
@@ -248,13 +255,9 @@ async def create_media_post(
                 uploaded_files.append(file_path)
 
             except Exception as e:
-                print(f"Error uploading file {file.filename}: {str(e)}")
+                logger.error(f"Error uploading file {file.filename}: {str(e)}")
                 # Clean up any already uploaded files
-                for uploaded_file_path in uploaded_files:
-                    try:
-                        supabase.storage.from_(STORAGE_BUCKET).remove([uploaded_file_path])
-                    except:
-                        pass
+                cleanup_uploaded_files(uploaded_files)
                 raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename}")
 
         # Insert all media records
@@ -262,23 +265,19 @@ async def create_media_post(
             try:
                 media_response = supabase.table("post_media").insert(media_records).execute()
             except Exception as e:
-                print(f"Error creating media records: {str(e)}")
+                logger.error(f"Error creating media records: {str(e)}")
                 # Clean up uploaded files
-                for uploaded_file_path in uploaded_files:
-                    try:
-                        supabase.storage.from_(STORAGE_BUCKET).remove([uploaded_file_path])
-                    except:
-                        pass
+                cleanup_uploaded_files(uploaded_files)
                 raise HTTPException(status_code=500, detail="Failed to create media records")
 
-        print(f"Successfully created media post with {len(media_records)} files")
+        logger.info(f"Successfully created media post with {len(media_records)} files")
 
         # Get user profile for complete response
         try:
             user_response = supabase.table("user_profiles").select("id, name, login, avatar_url, tag_id").eq("id", user_id).single().execute()
             user_data = user_response.data
         except Exception as e:
-            print(f"Error fetching user profile: {str(e)}")
+            logger.error(f"Error fetching user profile: {str(e)}")
             user_data = {"id": user_id, "name": "Unknown User", "login": "unknown", "avatar_url": "", "tag_id": None}
 
         # Return complete post data for immediate display
@@ -310,7 +309,7 @@ async def create_media_post(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Unexpected error creating media post: {str(e)}")
+        logger.error(f"Unexpected error creating media post: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create media post")
 
 
@@ -369,6 +368,7 @@ async def create_audio_post(
 
         # Handle cover image if provided
         cover_url = None
+        cover_path = None
         if cover_image and cover_image.filename:
             # Validate cover image (reuse media validation)
             if cover_image.content_type not in ALLOWED_IMAGE_TYPES:
@@ -391,9 +391,9 @@ async def create_audio_post(
         try:
             post_response = supabase.table("posts").insert(post_data).execute()
             post_id = post_response.data[0]["id"]
-            print(f"Created audio post with ID: {post_id}")
+            logger.info(f"Created audio post with ID: {post_id}")
         except Exception as e:
-            print(f"Error creating audio post: {str(e)}")
+            logger.error(f"Error creating audio post: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to create audio post")
 
         # Upload cover image if provided
@@ -405,9 +405,10 @@ async def create_audio_post(
 
                 # Upload to media bucket (reuse existing media bucket for covers)
                 cover_url = await upload_file_to_storage(cover_image, cover_path)
+                logger.info(f"Uploaded cover image: {cover_path}")
             except Exception as e:
-                print(f"Error uploading cover image: {str(e)}")
-                # Continue without cover - not critical
+                logger.error(f"Error uploading cover image: {str(e)}")
+                # Continue without cover - not critical for audio posts
 
         # Upload audio files and create audio records
         audio_records = []
@@ -440,20 +441,11 @@ async def create_audio_post(
                 uploaded_files.append(file_path)
 
             except Exception as e:
-                print(f"Error uploading audio file {file.filename}: {str(e)}")
+                logger.error(f"Error uploading audio file {file.filename}: {str(e)}")
                 # Clean up any already uploaded files
-                for uploaded_file_path in uploaded_files:
-                    try:
-                        supabase.storage.from_(AUDIO_STORAGE_BUCKET).remove([uploaded_file_path])
-                    except:
-                        pass
-                if cover_url:
-                    try:
-                        # Extract path from cover_url to delete it
-                        cover_path = cover_url.split('/')[-1]
-                        supabase.storage.from_(STORAGE_BUCKET).remove([f"posts/{user_id}/covers/{cover_path}"])
-                    except:
-                        pass
+                cleanup_uploaded_files(uploaded_files, AUDIO_STORAGE_BUCKET)
+                if cover_path:
+                    cleanup_uploaded_files([cover_path])
                 raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename}")
 
         # Insert all audio records
@@ -461,29 +453,21 @@ async def create_audio_post(
             try:
                 audio_response = supabase.table("post_audio").insert(audio_records).execute()
             except Exception as e:
-                print(f"Error creating audio records: {str(e)}")
+                logger.error(f"Error creating audio records: {str(e)}")
                 # Clean up uploaded files
-                for uploaded_file_path in uploaded_files:
-                    try:
-                        supabase.storage.from_(AUDIO_STORAGE_BUCKET).remove([uploaded_file_path])
-                    except:
-                        pass
-                if cover_url:
-                    try:
-                        cover_path = cover_url.split('/')[-1]
-                        supabase.storage.from_(STORAGE_BUCKET).remove([f"posts/{user_id}/covers/{cover_path}"])
-                    except:
-                        pass
+                cleanup_uploaded_files(uploaded_files, AUDIO_STORAGE_BUCKET)
+                if cover_path:
+                    cleanup_uploaded_files([cover_path])
                 raise HTTPException(status_code=500, detail="Failed to create audio records")
 
-        print(f"Successfully created audio post with {len(audio_records)} audio files")
+        logger.info(f"Successfully created audio post with {len(audio_records)} audio files")
 
         # Get user profile for complete response
         try:
             user_response = supabase.table("user_profiles").select("id, name, login, avatar_url, tag_id").eq("id", user_id).single().execute()
             user_data = user_response.data
         except Exception as e:
-            print(f"Error fetching user profile: {str(e)}")
+            logger.error(f"Error fetching user profile: {str(e)}")
             user_data = {"id": user_id, "name": "Unknown User", "login": "unknown", "avatar_url": "", "tag_id": None}
 
         # Return complete post data for immediate display
@@ -518,7 +502,7 @@ async def create_audio_post(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Unexpected error creating audio post: {str(e)}")
+        logger.error(f"Unexpected error creating audio post: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create audio post")
 
 
@@ -541,7 +525,7 @@ async def get_posts_feed(
             )
             posts = posts_response.data or []
         except Exception as e:
-            print(f"Error fetching posts: {str(e)}")
+            logger.error(f"Error fetching posts: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to fetch posts")
 
         if not posts:
@@ -561,7 +545,7 @@ async def get_posts_feed(
             )
             users_data = users_response.data or []
         except Exception as e:
-            print(f"Error fetching user profiles: {str(e)}")
+            logger.error(f"Error fetching user profiles: {str(e)}")
             users_data = []
 
         users_by_id = {user["id"]: user for user in users_data}
@@ -577,7 +561,7 @@ async def get_posts_feed(
             )
             media_data = media_response.data or []
         except Exception as e:
-            print(f"Error fetching media: {str(e)}")
+            logger.error(f"Error fetching media: {str(e)}")
             media_data = []
 
         # Group media by post_id
@@ -599,7 +583,7 @@ async def get_posts_feed(
             )
             audio_data = audio_response.data or []
         except Exception as e:
-            print(f"Error fetching audio: {str(e)}")
+            logger.error(f"Error fetching audio: {str(e)}")
             audio_data = []
 
         # Group audio by post_id
@@ -621,7 +605,7 @@ async def get_posts_feed(
             )
             musicxml_data = musicxml_response.data or []
         except Exception as e:
-            print(f"Error fetching musicxml: {str(e)}")
+            logger.error(f"Error fetching musicxml: {str(e)}")
             musicxml_data = []
 
         # Group musicxml by post_id
@@ -632,7 +616,7 @@ async def get_posts_feed(
                 musicxml_by_post[post_id] = []
             musicxml_by_post[post_id].append(musicxml)
 
-        # Get lyrics for all posts - NEW CODE
+        # Get lyrics for all posts
         try:
             lyrics_response = (
                 supabase.table("post_lyrics")
@@ -642,10 +626,10 @@ async def get_posts_feed(
             )
             lyrics_data = lyrics_response.data or []
         except Exception as e:
-            print(f"Error fetching lyrics: {str(e)}")
+            logger.error(f"Error fetching lyrics: {str(e)}")
             lyrics_data = []
 
-        # Group lyrics by post_id - NEW CODE (only one lyrics record per post)
+        # Group lyrics by post_id (only one lyrics record per post)
         lyrics_by_post = {}
         for lyrics in lyrics_data:
             post_id = lyrics["post_id"]
@@ -665,8 +649,8 @@ async def get_posts_feed(
                 if likes_response.data:
                     user_likes = {like["post_id"] for like in likes_response.data}
             except Exception as e:
-                print(f"Error fetching user likes: {str(e)}")
-                # Continue without likes data
+                logger.error(f"Error fetching user likes: {str(e)}")
+                # Continue without likes data - not critical for feed display
 
         # Format response
         formatted_posts = []
@@ -723,7 +707,6 @@ async def get_posts_feed(
                     }
                     for musicxml in musicxml_by_post.get(post_id, [])
                 ],
-                # ADD THIS NEW SECTION FOR LYRICS:
                 "lyrics": lyrics_by_post.get(post_id) and {
                     "title": lyrics_by_post[post_id]["title"],
                     "artist": lyrics_by_post[post_id]["artist"],
@@ -737,12 +720,9 @@ async def get_posts_feed(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error fetching user posts: {str(e)}")
+        logger.error(f"Error fetching user posts: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch user posts")
 
-
-# Add these 3 endpoints to your existing post_router.py file
-# Place them AFTER your existing /feed endpoint but BEFORE any parameterized routes like /{post_id}
 
 @router.get("/feed/listened-to")
 async def get_listened_to_feed(
@@ -769,7 +749,7 @@ async def get_listened_to_feed(
             )
             following_data = following_response.data or []
         except Exception as e:
-            print(f"Error fetching following list: {str(e)}")
+            logger.error(f"Error fetching following list: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to fetch following list")
 
         # If user is not following anyone, return empty array
@@ -791,7 +771,7 @@ async def get_listened_to_feed(
             )
             posts = posts_response.data or []
         except Exception as e:
-            print(f"Error fetching posts from followed users: {str(e)}")
+            logger.error(f"Error fetching posts from followed users: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to fetch posts")
 
         if not posts:
@@ -811,7 +791,7 @@ async def get_listened_to_feed(
             )
             users_data = users_response.data or []
         except Exception as e:
-            print(f"Error fetching user profiles: {str(e)}")
+            logger.error(f"Error fetching user profiles: {str(e)}")
             users_data = []
 
         users_by_id = {user["id"]: user for user in users_data}
@@ -827,7 +807,7 @@ async def get_listened_to_feed(
             )
             media_data = media_response.data or []
         except Exception as e:
-            print(f"Error fetching media: {str(e)}")
+            logger.error(f"Error fetching media: {str(e)}")
             media_data = []
 
         # Group media by post_id
@@ -849,7 +829,7 @@ async def get_listened_to_feed(
             )
             audio_data = audio_response.data or []
         except Exception as e:
-            print(f"Error fetching audio: {str(e)}")
+            logger.error(f"Error fetching audio: {str(e)}")
             audio_data = []
 
         # Group audio by post_id
@@ -871,7 +851,7 @@ async def get_listened_to_feed(
             )
             musicxml_data = musicxml_response.data or []
         except Exception as e:
-            print(f"Error fetching musicxml: {str(e)}")
+            logger.error(f"Error fetching musicxml: {str(e)}")
             musicxml_data = []
 
         # Group musicxml by post_id
@@ -892,7 +872,7 @@ async def get_listened_to_feed(
             )
             lyrics_data = lyrics_response.data or []
         except Exception as e:
-            print(f"Error fetching lyrics: {str(e)}")
+            logger.error(f"Error fetching lyrics: {str(e)}")
             lyrics_data = []
 
         # Group lyrics by post_id
@@ -914,7 +894,8 @@ async def get_listened_to_feed(
             if likes_response.data:
                 user_likes = {like["post_id"] for like in likes_response.data}
         except Exception as e:
-            print(f"Error fetching user likes: {str(e)}")
+            logger.error(f"Error fetching user likes: {str(e)}")
+            # Continue without likes data - not critical
 
         # Format response (same as regular feed)
         formatted_posts = []
@@ -984,7 +965,7 @@ async def get_listened_to_feed(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error fetching listened to posts: {str(e)}")
+        logger.error(f"Error fetching listened to posts: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch listened to posts")
 
 
@@ -1022,15 +1003,19 @@ async def check_following_status(
             return {"is_following": is_following}
 
         except Exception as e:
-            print(f"Error checking follow status: {str(e)}")
+            logger.error(f"Error checking follow status: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to check follow status")
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Unexpected error in check_following_status: {str(e)}")
+        logger.error(f"Unexpected error in check_following_status: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to check follow status")
 
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 @router.post("/follow/{user_id}")
 async def toggle_follow(
@@ -1063,6 +1048,7 @@ async def toggle_follow(
         except Exception as e:
             if "404" in str(e) or "not found" in str(e).lower():
                 raise HTTPException(status_code=404, detail="User not found")
+            logger.error(f"Error verifying user existence: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to verify user")
 
         # Check if already following
@@ -1079,7 +1065,7 @@ async def toggle_follow(
                 # Unfollow - remove the follow relationship
                 follow_id = existing_follow.data[0]["id"]
                 supabase.table("listened_users").delete().eq("id", follow_id).execute()
-
+                logger.info(f"User {listener_id} unfollowed user {user_id}")
                 return {"message": "User unfollowed", "is_following": False}
             else:
                 # Follow - create the follow relationship
@@ -1089,18 +1075,19 @@ async def toggle_follow(
                     "listened_at": datetime.now(timezone.utc).isoformat()
                 }
                 supabase.table("listened_users").insert(follow_data).execute()
-
+                logger.info(f"User {listener_id} followed user {user_id}")
                 return {"message": "User followed", "is_following": True}
 
         except Exception as e:
-            print(f"Error toggling follow: {str(e)}")
+            logger.error(f"Error toggling follow: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to toggle follow")
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Unexpected error in toggle_follow: {str(e)}")
+        logger.error(f"Unexpected error in toggle_follow: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to toggle follow")
+
 
 @router.get("/{post_id}/comments")
 async def get_comments(
@@ -1129,7 +1116,7 @@ async def get_comments(
             )
             comments = comments_response.data or []
         except Exception as e:
-            print(f"Error fetching comments: {str(e)}")
+            logger.error(f"Error fetching comments for post {post_id}: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to fetch comments")
 
         if not comments:
@@ -1149,7 +1136,7 @@ async def get_comments(
             users_data = users_response.data or []
             users_by_id = {user["id"]: user for user in users_data}
         except Exception as e:
-            print(f"Error fetching user profiles: {str(e)}")
+            logger.error(f"Error fetching user profiles for comments: {str(e)}")
             users_by_id = {}
 
         # Map user roles
@@ -1190,11 +1177,9 @@ async def get_comments(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in get_comments: {str(e)}")
+        logger.error(f"Error in get_comments: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch comments")
 
-
-# Replace your create_comment function with this version:
 
 @router.post("/{post_id}/comments")
 async def create_comment(
@@ -1204,8 +1189,8 @@ async def create_comment(
 ):
     """Create a new comment on a post with mention notifications"""
     try:
-        print(f"🔍 DEBUG - Starting create_comment for post: {post_id}")
-        print(f"🔍 DEBUG - Comment data received: {comment_data}")
+        logger.debug(f"Starting create_comment for post: {post_id}")
+        logger.debug(f"Comment data received: {comment_data}")
 
         # Validate post ID is UUID
         try:
@@ -1215,7 +1200,7 @@ async def create_comment(
 
         # Validate comment content
         content = comment_data.get("content", "").strip()
-        print(f"🔍 DEBUG - Comment content: '{content}'")
+        logger.debug(f"Comment content: '{content}'")
 
         if not content:
             raise HTTPException(status_code=400, detail="Comment content is required")
@@ -1229,22 +1214,23 @@ async def create_comment(
             if not post_response.data:
                 raise HTTPException(status_code=404, detail="Post not found")
             post_data = post_response.data
-            print(f"🔍 DEBUG - Post found, owner: {post_data['user_id']}")
+            logger.debug(f"Post found, owner: {post_data['user_id']}")
         except Exception as e:
             if "404" in str(e) or "not found" in str(e).lower():
                 raise HTTPException(status_code=404, detail="Post not found")
+            logger.error(f"Error verifying post: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to verify post")
 
         user_id = current_user["id"]
-        print(f"🔍 DEBUG - Current user ID: {user_id}")
+        logger.debug(f"Current user ID: {user_id}")
 
         # Extract mentions from comment content
         mentioned_usernames = extract_mentions(content)
-        print(f"🔍 DEBUG - Extracted mentions: {mentioned_usernames}")
+        logger.debug(f"Extracted mentions: {mentioned_usernames}")
 
         # Resolve usernames to user IDs
         mentioned_users = await resolve_usernames_to_ids(mentioned_usernames)
-        print(f"🔍 DEBUG - Resolved mentions: {mentioned_users}")
+        logger.debug(f"Resolved mentions: {mentioned_users}")
 
         # Create comment
         comment_record = {
@@ -1257,9 +1243,9 @@ async def create_comment(
         try:
             comment_response = supabase.table("post_comments").insert(comment_record).execute()
             created_comment = comment_response.data[0]
-            print(f"✅ DEBUG - Comment created with ID: {created_comment['id']}")
+            logger.info(f"Comment created with ID: {created_comment['id']}")
         except Exception as e:
-            print(f"❌ Error creating comment: {str(e)}")
+            logger.error(f"Error creating comment: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to create comment")
 
         # Update comments count on post
@@ -1267,14 +1253,15 @@ async def create_comment(
             current_post = supabase.table("posts").select("comments_count").eq("id", post_id).single().execute()
             new_count = (current_post.data["comments_count"] or 0) + 1
             supabase.table("posts").update({"comments_count": new_count}).eq("id", post_id).execute()
-            print(f"✅ DEBUG - Updated comments count to: {new_count}")
+            logger.debug(f"Updated comments count to: {new_count}")
         except Exception as e:
-            print(f"❌ Error updating comments count: {str(e)}")
+            logger.error(f"Error updating comments count: {str(e)}")
+            # Continue - comment was created successfully
 
         # Send notifications to mentioned users
         for username, mentioned_user_id in mentioned_users.items():
             try:
-                print(f"🔍 DEBUG - Sending mention notification to {username} (ID: {mentioned_user_id})")
+                logger.debug(f"Sending mention notification to {username} (ID: {mentioned_user_id})")
 
                 # Try with post_id parameter first, fallback to without if it fails
                 try:
@@ -1286,7 +1273,7 @@ async def create_comment(
                         post_id=post_id
                     )
                 except TypeError as e:
-                    print(f"⚠️ DEBUG - create_notification doesn't support post_id yet, using old version: {e}")
+                    logger.warning(f"create_notification doesn't support post_id yet, using old version: {e}")
                     # Fallback to old function signature
                     await create_notification(
                         recipient_id=mentioned_user_id,
@@ -1295,15 +1282,16 @@ async def create_comment(
                         message=f"mentioned you in a comment"
                     )
 
-                print(f"✅ DEBUG - Sent mention notification to {username}")
+                logger.debug(f"Sent mention notification to {username}")
             except Exception as e:
-                print(f"❌ Error sending mention notification to {username}: {str(e)}")
+                logger.error(f"Error sending mention notification to {username}: {str(e)}")
+                # Continue - don't fail comment creation due to notification errors
 
         # Send notification to post owner (if not the commenter and not already mentioned)
         post_owner_id = post_data["user_id"]
         if post_owner_id != user_id and post_owner_id not in mentioned_users.values():
             try:
-                print(f"🔍 DEBUG - Sending comment notification to post owner (ID: {post_owner_id})")
+                logger.debug(f"Sending comment notification to post owner (ID: {post_owner_id})")
 
                 # Try with post_id parameter first, fallback to without if it fails
                 try:
@@ -1315,7 +1303,7 @@ async def create_comment(
                         post_id=post_id
                     )
                 except TypeError as e:
-                    print(f"⚠️ DEBUG - create_notification doesn't support post_id yet, using old version: {e}")
+                    logger.warning(f"create_notification doesn't support post_id yet, using old version: {e}")
                     # Fallback to old function signature
                     await create_notification(
                         recipient_id=post_owner_id,
@@ -1324,17 +1312,17 @@ async def create_comment(
                         message=f"commented on your post"
                     )
 
-                print(f"✅ DEBUG - Sent comment notification to post owner")
+                logger.debug(f"Sent comment notification to post owner")
             except Exception as e:
-                print(f"❌ Error sending comment notification: {str(e)}")
+                logger.error(f"Error sending comment notification: {str(e)}")
+                # Continue - don't fail comment creation due to notification errors
 
         # Get user profile for response
         try:
-            user_response = supabase.table("user_profiles").select("id, name, login, avatar_url, tag_id").eq("id",
-                                                                                                             user_id).single().execute()
+            user_response = supabase.table("user_profiles").select("id, name, login, avatar_url, tag_id").eq("id", user_id).single().execute()
             user_data = user_response.data
         except Exception as e:
-            print(f"❌ Error fetching user profile: {str(e)}")
+            logger.error(f"Error fetching user profile: {str(e)}")
             user_data = {"id": user_id, "name": "Unknown User", "login": "unknown", "avatar_url": "", "tag_id": None}
 
         # Map user role
@@ -1346,7 +1334,7 @@ async def create_comment(
             }
             return role_map.get(tag_id, "Listener")
 
-        print(f"🎉 DEBUG - Comment creation completed successfully!")
+        logger.info(f"Comment creation completed successfully for post {post_id}")
 
         return {
             "message": "Comment created successfully",
@@ -1368,11 +1356,9 @@ async def create_comment(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Unexpected error in create_comment: {str(e)}")
+        logger.error(f"Unexpected error in create_comment: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create comment")
 
-# ========== LIKES ENDPOINTS ==========
-# IMPORTANT: These must come BEFORE /{post_id} route
 
 @router.post("/{post_id}/like")
 async def toggle_like(
@@ -1397,6 +1383,7 @@ async def toggle_like(
         except Exception as e:
             if "404" in str(e) or "not found" in str(e).lower():
                 raise HTTPException(status_code=404, detail="Post not found")
+            logger.error(f"Error verifying post existence: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to verify post")
 
         # Check if user already liked this post
@@ -1409,11 +1396,16 @@ async def toggle_like(
                 supabase.table("post_likes").delete().eq("id", like_id).execute()
 
                 # Decrement likes count
-                current_post = supabase.table("posts").select("likes_count").eq("id", post_id).single().execute()
-                current_count = current_post.data["likes_count"] or 0
-                new_count = max(0, current_count - 1)
-                supabase.table("posts").update({"likes_count": new_count}).eq("id", post_id).execute()
+                try:
+                    current_post = supabase.table("posts").select("likes_count").eq("id", post_id).single().execute()
+                    current_count = current_post.data["likes_count"] or 0
+                    new_count = max(0, current_count - 1)
+                    supabase.table("posts").update({"likes_count": new_count}).eq("id", post_id).execute()
+                except Exception as e:
+                    logger.error(f"Error updating likes count after unlike: {str(e)}")
+                    # Continue - the unlike operation succeeded
 
+                logger.info(f"User {user_id} unliked post {post_id}")
                 return {"message": "Post unliked", "liked": False}
             else:
                 # Like - add the like
@@ -1425,176 +1417,184 @@ async def toggle_like(
                 supabase.table("post_likes").insert(like_data).execute()
 
                 # Increment likes count
-                current_post = supabase.table("posts").select("likes_count").eq("id", post_id).single().execute()
-                new_count = (current_post.data["likes_count"] or 0) + 1
-                supabase.table("posts").update({"likes_count": new_count}).eq("id", post_id).execute()
+                try:
+                    current_post = supabase.table("posts").select("likes_count").eq("id", post_id).single().execute()
+                    new_count = (current_post.data["likes_count"] or 0) + 1
+                    supabase.table("posts").update({"likes_count": new_count}).eq("id", post_id).execute()
+                except Exception as e:
+                    logger.error(f"Error updating likes count after like: {str(e)}")
+                    # Continue - the like operation succeeded
 
+                logger.info(f"User {user_id} liked post {post_id}")
                 return {"message": "Post liked", "liked": True}
 
         except Exception as e:
-            print(f"Error toggling like: {str(e)}")
+            logger.error(f"Error toggling like for post {post_id}: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to toggle like")
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Unexpected error in toggle_like: {str(e)}")
+        logger.error(f"Unexpected error in toggle_like: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to toggle like")
 
 
-# ========== INDIVIDUAL POST ENDPOINT ==========
-# IMPORTANT: This parameterized route MUST come LAST
-
 @router.get("/user/{user_id}")
 async def get_user_posts(
-                user_id: str,
-                current_user: Optional[dict] = Depends(get_optional_user),
-                limit: int = 20,
-                offset: int = 0
-        ):
-            """Get posts from a specific user"""
+    user_id: str,
+    current_user: Optional[dict] = Depends(get_optional_user),
+    limit: int = 20,
+    offset: int = 0
+):
+    """Get posts from a specific user"""
+    try:
+        # Validate user_id is UUID
+        try:
+            uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+        # Get posts
+        try:
+            posts_response = (
+                supabase.table("posts")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .range(offset, offset + limit - 1)
+                .execute()
+            )
+            posts = posts_response.data or []
+        except Exception as e:
+            logger.error(f"Error fetching user posts for user {user_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to fetch posts")
+
+        if not posts:
+            return []
+
+        # Get user profile
+        try:
+            user_response = (
+                supabase.table("user_profiles")
+                .select("id, name, login, avatar_url, tag_id")
+                .eq("id", user_id)
+                .single()
+                .execute()
+            )
+            user_data = user_response.data
+        except Exception as e:
+            logger.error(f"Error fetching user profile for {user_id}: {str(e)}")
+            user_data = {"id": user_id, "name": "Unknown User", "login": "unknown", "avatar_url": "", "tag_id": None}
+
+        # Get post IDs
+        post_ids = [post["id"] for post in posts]
+
+        # Get media for all posts
+        try:
+            media_response = (
+                supabase.table("post_media")
+                .select("*")
+                .in_("post_id", post_ids)
+                .order("order_index")
+                .execute()
+            )
+            media_data = media_response.data or []
+        except Exception as e:
+            logger.error(f"Error fetching media for user posts: {str(e)}")
+            media_data = []
+
+        # Group media by post_id
+        media_by_post = {}
+        for media in media_data:
+            post_id = media["post_id"]
+            if post_id not in media_by_post:
+                media_by_post[post_id] = []
+            media_by_post[post_id].append(media)
+
+        # Get audio for all posts
+        try:
+            audio_response = (
+                supabase.table("post_audio")
+                .select("*")
+                .in_("post_id", post_ids)
+                .order("order_index")
+                .execute()
+            )
+            audio_data = audio_response.data or []
+        except Exception as e:
+            logger.error(f"Error fetching audio for user posts: {str(e)}")
+            audio_data = []
+
+        # Group audio by post_id
+        audio_by_post = {}
+        for audio in audio_data:
+            post_id = audio["post_id"]
+            if post_id not in audio_by_post:
+                audio_by_post[post_id] = []
+            audio_by_post[post_id].append(audio)
+
+        # Get likes for current user if authenticated
+        user_likes = set()
+        if current_user:
             try:
-                # Get posts
-                try:
-                    posts_response = (
-                        supabase.table("posts")
-                        .select("*")
-                        .eq("user_id", user_id)
-                        .order("created_at", desc=True)
-                        .range(offset, offset + limit - 1)
-                        .execute()
-                    )
-                    posts = posts_response.data or []
-                except Exception as e:
-                    print(f"Error fetching user posts: {str(e)}")
-                    raise HTTPException(status_code=500, detail="Failed to fetch posts")
-
-                if not posts:
-                    return []
-
-                # Get user profile
-                try:
-                    user_response = (
-                        supabase.table("user_profiles")
-                        .select("id, name, login, avatar_url, tag_id")
-                        .eq("id", user_id)
-                        .single()
-                        .execute()
-                    )
-                    user_data = user_response.data
-                except Exception as e:
-                    print(f"Error fetching user profile: {str(e)}")
-                    user_data = {"id": user_id, "name": "Unknown User", "login": "unknown", "avatar_url": "",
-                                 "tag_id": None}
-
-                # Get post IDs
-                post_ids = [post["id"] for post in posts]
-
-                # Get media for all posts
-                try:
-                    media_response = (
-                        supabase.table("post_media")
-                        .select("*")
-                        .in_("post_id", post_ids)
-                        .order("order_index")
-                        .execute()
-                    )
-                    media_data = media_response.data or []
-                except Exception as e:
-                    print(f"Error fetching media: {str(e)}")
-                    media_data = []
-
-                # Group media by post_id
-                media_by_post = {}
-                for media in media_data:
-                    post_id = media["post_id"]
-                    if post_id not in media_by_post:
-                        media_by_post[post_id] = []
-                    media_by_post[post_id].append(media)
-
-                # Get audio for all posts
-                try:
-                    audio_response = (
-                        supabase.table("post_audio")
-                        .select("*")
-                        .in_("post_id", post_ids)
-                        .order("order_index")
-                        .execute()
-                    )
-                    audio_data = audio_response.data or []
-                except Exception as e:
-                    print(f"Error fetching audio: {str(e)}")
-                    audio_data = []
-
-                # Group audio by post_id
-                audio_by_post = {}
-                for audio in audio_data:
-                    post_id = audio["post_id"]
-                    if post_id not in audio_by_post:
-                        audio_by_post[post_id] = []
-                    audio_by_post[post_id].append(audio)
-
-                # Get likes for current user if authenticated
-                user_likes = set()
-                if current_user:
-                    try:
-                        likes_response = (
-                            supabase.table("post_likes")
-                            .select("post_id")
-                            .in_("post_id", post_ids)
-                            .eq("user_id", current_user["id"])
-                            .execute()
-                        )
-                        if likes_response.data:
-                            user_likes = {like["post_id"] for like in likes_response.data}
-                    except Exception as e:
-                        print(f"Error fetching user likes: {str(e)}")
-
-                # Format response
-                formatted_posts = []
-                for post in posts:
-                    post_id = post["id"]
-                    formatted_posts.append({
-                        "id": post_id,
-                        "type": post["type"],
-                        "caption": post.get("caption", ""),
-                        "created_at": post["created_at"],
-                        "likes_count": post.get("likes_count", 0),
-                        "comments_count": post.get("comments_count", 0),
-                        "user": user_data,
-                        "user_liked": post_id in user_likes,
-                        "media": [
-                            {
-                                "id": media["id"],
-                                "file_url": media["file_url"],
-                                "file_type": media["file_type"],
-                                "file_name": media["file_name"],
-                                "order_index": media["order_index"]
-                            }
-                            for media in media_by_post.get(post_id, [])
-                        ],
-                        "audio": [
-                            {
-                                "id": audio["id"],
-                                "title": audio["title"],
-                                "artist": audio["artist"],
-                                "file_url": audio["file_url"],
-                                "file_name": audio["file_name"],
-                                "cover_url": audio["cover_url"],
-                                "duration": audio["duration"],
-                                "order_index": audio["order_index"]
-                            }
-                            for audio in audio_by_post.get(post_id, [])
-                        ]
-                    })
-
-                return formatted_posts
-
-            except HTTPException:
-                raise
+                likes_response = (
+                    supabase.table("post_likes")
+                    .select("post_id")
+                    .in_("post_id", post_ids)
+                    .eq("user_id", current_user["id"])
+                    .execute()
+                )
+                if likes_response.data:
+                    user_likes = {like["post_id"] for like in likes_response.data}
             except Exception as e:
-                print(f"Error fetching user posts: {str(e)}")
-                raise HTTPException(status_code=500, detail="Failed to fetch user posts")
+                logger.error(f"Error fetching user likes: {str(e)}")
+                # Continue without likes data
+
+        # Format response
+        formatted_posts = []
+        for post in posts:
+            post_id = post["id"]
+            formatted_posts.append({
+                "id": post_id,
+                "type": post["type"],
+                "caption": post.get("caption", ""),
+                "created_at": post["created_at"],
+                "likes_count": post.get("likes_count", 0),
+                "comments_count": post.get("comments_count", 0),
+                "user": user_data,
+                "user_liked": post_id in user_likes,
+                "media": [
+                    {
+                        "id": media["id"],
+                        "file_url": media["file_url"],
+                        "file_type": media["file_type"],
+                        "file_name": media["file_name"],
+                        "order_index": media["order_index"]
+                    }
+                    for media in media_by_post.get(post_id, [])
+                ],
+                "audio": [
+                    {
+                        "id": audio["id"],
+                        "title": audio["title"],
+                        "artist": audio["artist"],
+                        "file_url": audio["file_url"],
+                        "file_name": audio["file_name"],
+                        "cover_url": audio["cover_url"],
+                        "duration": audio["duration"],
+                        "order_index": audio["order_index"]
+                    }
+                    for audio in audio_by_post.get(post_id, [])
+                ]
+            })
+
+        return formatted_posts
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching user posts: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch user posts")
 
 @router.get("/{post_id}")
 async def get_post(
