@@ -158,7 +158,7 @@ async def get_reports(request: Request):
                         "post_id": str(report['post_id']),
                         "reason": report['reason'],
                         "description": report.get('description', ''),
-                        "post_link": f"https://techtuners-tt.github.io/frontend/#/post/{report['post_id']}",
+                        "post_link": f"https://techtuners-tt.github.io/SelfSound/#/post/{report['post_id']}",
                         "reporter_name": reporter_name,
                         "status": report.get('status', 'pending')
                     })
