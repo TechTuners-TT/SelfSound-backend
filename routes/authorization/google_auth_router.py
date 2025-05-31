@@ -1,5 +1,6 @@
 import os
 import uuid
+import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from google.oauth2 import id_token
@@ -11,28 +12,30 @@ from typing import Optional
 import httpx
 import urllib.parse
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
-
-IS_TESTING = os.getenv("TESTING", "false").lower() == "true"
 
 
 def get_cookie_security_settings():
-    """Get cookie security settings based on environment"""
-    environment = os.getenv("ENVIRONMENT", "development")
+    """
+    PRODUCTION: Cookie security settings for cross-origin deployment
+    GitHub Pages (Frontend) -> Render (Backend)
+    """
+    environment = os.getenv("ENVIRONMENT", "production")
 
     if environment == "production":
         return {
-            "httponly": True,
-            "secure": True,  # HTTPS required for production
-            "samesite": "none",  # Cross-site requests (GitHub Pages to Render)
-            "max_age": 24 * 3600,
-            "path": "/",
+            "httponly": True,  # 🔒 Security: Prevent XSS attacks
+            "secure": True,  # 🔒 HTTPS only - CRITICAL for production
+            "samesite": "none",  # 🌐 CRUCIAL: Cross-origin requests (GitHub Pages -> Render)
+            "max_age": 24 * 3600,  # ⏰ 24 hours expiry
+            "path": "/",  # 🌍 Available across entire backend
         }
     else:
         return {
-            "httponly": True,
-            "secure": False,  # HTTP for localhost development
-            "samesite": "lax",  # Same-site for development
+            "httponly": True,  # 🔒 Security even in development
+            "secure": False,  # 🏠 HTTP for localhost
+            "samesite": "lax",  # 🏠 Same-site for development
             "max_age": 24 * 3600,
             "path": "/",
         }
@@ -116,20 +119,17 @@ async def auth_callback(request: Request):
 
         jwt_token = generate_jwt(id_info)
 
-        # ✅ USE DYNAMIC COOKIE SETTINGS INSTEAD OF HARDCODED
+        # 🍪 PRODUCTION COOKIE: Use dynamic cookie settings
         cookie_settings = get_cookie_security_settings()
-
-        # Add debug logging
-        print(f"🔍 Google Auth - Environment: {os.getenv('ENVIRONMENT', 'development')}")
-        print(f"🔍 Google Auth - Cookie settings: {cookie_settings}")
-        print(f"🔍 Google Auth - Generated token: {jwt_token[:50]}...")
 
         response = RedirectResponse(url=redirect_to, status_code=302)
         response.set_cookie(
             key="access_token",
             value=jwt_token,
-            **cookie_settings  # ✅ Use dynamic settings instead of hardcoded
+            **cookie_settings
         )
+
+        logger.info("Google authentication successful")
         return response
 
     except ValueError:
@@ -168,28 +168,47 @@ def get_current_user_raw(request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
-        # Декодуємо кастомний JWT без перевірки audience та issuer
+        # Use your existing JWT decoder
         user_info = decode_jwt(token, verify_aud_iss=False)
         return JSONResponse(content={"user": user_info})
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
-# ===== DEBUG ENDPOINT FOR GOOGLE AUTH =====
-@router.get("/debug-google-cookies")
-def debug_google_cookies(request: Request):
-    """Debug Google auth cookies"""
-    cookies = request.cookies
-    environment = os.getenv("ENVIRONMENT", "development")
-    cookie_settings = get_cookie_security_settings()
+@router.post("/logout")
+async def logout():
+    """
+    PRODUCTION: Logout with proper cookie cleanup
+    """
+    try:
+        cookie_settings = get_cookie_security_settings()
 
-    return {
-        "received_cookies": dict(cookies),
-        "access_token_present": "access_token" in cookies,
-        "access_token_value": cookies.get("access_token", "NOT_FOUND")[:50] if cookies.get(
-            "access_token") else "NOT_FOUND",
-        "environment": environment,
-        "cookie_settings": cookie_settings,
-        "auth_type": "google",
-        "all_headers": dict(request.headers)
-    }
+        response = JSONResponse(content={"message": "Logged out successfully"})
+
+        # 🍪 Clean up auth cookies with production settings
+        response.delete_cookie(
+            key="access_token",
+            path="/",
+            secure=cookie_settings["secure"],
+            samesite=cookie_settings["samesite"]
+        )
+
+        # 🧹 Backup cleanup with different settings to ensure removal
+        backup_configs = [
+            {"path": "/", "secure": True, "samesite": "none"},
+            {"path": "/", "secure": False, "samesite": "lax"},
+            {"path": "/"},
+        ]
+
+        for config in backup_configs:
+            try:
+                response.delete_cookie(key="access_token", **config)
+            except:
+                pass  # Ignore cleanup errors
+
+        logger.info("Google logout successful")
+        return response
+
+    except Exception as e:
+        logger.error(f"Logout error: {str(e)}")
+        return JSONResponse(content={"message": "Logged out"})
