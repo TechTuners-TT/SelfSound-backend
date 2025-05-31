@@ -15,6 +15,29 @@ router = APIRouter()
 
 IS_TESTING = os.getenv("TESTING", "false").lower() == "true"
 
+
+def get_cookie_security_settings():
+    """Get cookie security settings based on environment"""
+    environment = os.getenv("ENVIRONMENT", "development")
+
+    if environment == "production":
+        return {
+            "httponly": True,
+            "secure": True,  # HTTPS required for production
+            "samesite": "none",  # Cross-site requests (GitHub Pages to Render)
+            "max_age": 24 * 3600,
+            "path": "/",
+        }
+    else:
+        return {
+            "httponly": True,
+            "secure": False,  # HTTP for localhost development
+            "samesite": "lax",  # Same-site for development
+            "max_age": 24 * 3600,
+            "path": "/",
+        }
+
+
 @router.get("/login")
 def login(redirect_to: Optional[str] = None):
     params = {
@@ -30,6 +53,7 @@ def login(redirect_to: Optional[str] = None):
 
     url = f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
     return RedirectResponse(url)
+
 
 @router.get("/callback")
 async def auth_callback(request: Request):
@@ -92,15 +116,19 @@ async def auth_callback(request: Request):
 
         jwt_token = generate_jwt(id_info)
 
+        # ✅ USE DYNAMIC COOKIE SETTINGS INSTEAD OF HARDCODED
+        cookie_settings = get_cookie_security_settings()
+
+        # Add debug logging
+        print(f"🔍 Google Auth - Environment: {os.getenv('ENVIRONMENT', 'development')}")
+        print(f"🔍 Google Auth - Cookie settings: {cookie_settings}")
+        print(f"🔍 Google Auth - Generated token: {jwt_token[:50]}...")
+
         response = RedirectResponse(url=redirect_to, status_code=302)
         response.set_cookie(
             key="access_token",
             value=jwt_token,
-            httponly=True,
-            secure=True,
-            samesite="none",
-            max_age=3600,
-            path="/"
+            **cookie_settings  # ✅ Use dynamic settings instead of hardcoded
         )
         return response
 
@@ -110,6 +138,7 @@ async def auth_callback(request: Request):
         raise HTTPException(status_code=http_error.response.status_code, detail=f"HTTP error occurred: {http_error}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 
 async def exchange_code_for_token(code: str):
     token_url = "https://oauth2.googleapis.com/token"
@@ -131,6 +160,7 @@ async def exchange_code_for_token(code: str):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"An error occurred during token exchange: {str(e)}")
 
+
 @router.get("/me/raw")
 def get_current_user_raw(request: Request):
     token = request.cookies.get("access_token")
@@ -143,3 +173,23 @@ def get_current_user_raw(request: Request):
         return JSONResponse(content={"user": user_info})
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+# ===== DEBUG ENDPOINT FOR GOOGLE AUTH =====
+@router.get("/debug-google-cookies")
+def debug_google_cookies(request: Request):
+    """Debug Google auth cookies"""
+    cookies = request.cookies
+    environment = os.getenv("ENVIRONMENT", "development")
+    cookie_settings = get_cookie_security_settings()
+
+    return {
+        "received_cookies": dict(cookies),
+        "access_token_present": "access_token" in cookies,
+        "access_token_value": cookies.get("access_token", "NOT_FOUND")[:50] if cookies.get(
+            "access_token") else "NOT_FOUND",
+        "environment": environment,
+        "cookie_settings": cookie_settings,
+        "auth_type": "google",
+        "all_headers": dict(request.headers)
+    }
