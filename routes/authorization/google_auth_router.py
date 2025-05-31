@@ -35,10 +35,10 @@ def login(redirect_to: Optional[str] = None):
 async def auth_callback(request: Request):
     error = request.query_params.get("error")
     code = request.query_params.get("code")
-    redirect_to = request.query_params.get("state", "https://techtuners-tt.github.io/frontend/#/home")
+    redirect_to = request.query_params.get("state", "https://techtuners-tt.github.io/SelfSound/#/home")
 
     if error == "access_denied":
-        return RedirectResponse(url="https://techtuners-tt.github.io/frontend/#/sign-up")
+        return RedirectResponse(url="https://techtuners-tt.github.io/SelfSound/#/sign-up")
 
     if not code:
         raise HTTPException(status_code=400, detail="Authorization code is missing")

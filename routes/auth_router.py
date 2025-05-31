@@ -36,7 +36,7 @@ def login(redirect_to: Optional[str] = None):
 @router.get("/callback")
 async def auth_callback(request: Request):
     code = request.query_params.get("code")
-    redirect_to = request.query_params.get("state", "https://techtuners-tt.github.io/frontend/#/home")
+    redirect_to = request.query_params.get("state", "https://techtuners-tt.github.io/SelfSound/#/home")
     if not code:
         raise HTTPException(status_code=400, detail="Authorization code is missing")
 
