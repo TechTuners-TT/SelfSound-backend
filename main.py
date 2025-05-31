@@ -11,7 +11,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://techtuners-tt.github.io/SelfSound/#/"],
+    allow_origins=["http://localhost:5173", "https://techtuners-tt.github.io"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
