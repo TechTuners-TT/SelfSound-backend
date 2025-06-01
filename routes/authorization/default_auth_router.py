@@ -58,7 +58,7 @@ def get_cookie_security_settings():
         return {
             "httponly": True,  # 🔒 Security even in development
             "secure": False,  # 🏠 HTTP for localhost
-            "samesite": "lax",  # 🏠 Same-site for development
+            "samesite": "none",  # 🏠 Same-site for development
             "max_age": 24 * 3600,
             "path": "/",
         }
@@ -511,7 +511,7 @@ async def logout(response: Response):
         # 🧹 Backup cleanup with different settings to ensure removal
         backup_configs = [
             {"path": "/", "secure": True, "samesite": "none"},
-            {"path": "/", "secure": False, "samesite": "lax"},
+            {"path": "/", "secure": False, "samesite": "none"},
             {"path": "/"},
         ]
 
