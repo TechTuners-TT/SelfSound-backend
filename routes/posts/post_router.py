@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Query
 from typing import Annotated, List, Optional
 import uuid
 import os
@@ -1456,7 +1456,7 @@ async def get_user_posts(
 
         # Get posts for the user
         posts_response = supabase.table("posts").select("*").eq("user_id", user_id).order("created_at",
-                                                                                          desc=True).range(offset,
+                                                                                           desc=True).range(offset,
                                                                                                            offset + limit - 1).execute()
         posts_data = posts_response.data or []
 
