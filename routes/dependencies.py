@@ -2,23 +2,32 @@ from fastapi import Request, HTTPException
 from supabase_client import supabase
 from jwt_handler import decode_jwt
 
+
 async def get_verified_user(request: Request):
     token = None
-    auth_header = request.headers.get("Authorization")
+    auth_source = None
 
+    # Try Authorization header first (works better on mobile)
+    auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
-        print(f"[get_verified_user] Access token from Authorization header: {token[:50]}...")
-    else:
+        auth_source = "header"
+        print(f"[get_verified_user] Token from Authorization header: {token[:50]}...")
+
+    # Fallback to cookies
+    if not token:
         token = request.cookies.get("access_token")
+        auth_source = "cookie"
         print(f"[get_verified_user] Access token from cookies: {token[:50] if token else None}...")
 
     if not token:
-        print("[get_verified_user] No token found")
+        print("[get_verified_user] No token found in header or cookies")
         raise HTTPException(status_code=401, detail="No authentication token provided")
 
+    print(f"[get_verified_user] Using token from: {auth_source}")
+
     try:
-        payload = decode_jwt(token)  # Без аргументів issuer і audience
+        payload = decode_jwt(token)
         print(f"[get_verified_user] Decoded JWT payload: {payload}")
 
         user_sub = payload.get("sub")
@@ -51,7 +60,7 @@ async def get_verified_user(request: Request):
             print("[get_verified_user] Email user is not verified")
             raise HTTPException(status_code=403, detail="Email not verified")
 
-        print(f"[get_verified_user] Successfully verified user: {user_data.get('email')}")
+        print(f"[get_verified_user] Successfully verified user: {user_data.get('email')} via {auth_source}")
 
         return {
             "id": user_data.get("id"),
