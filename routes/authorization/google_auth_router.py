@@ -16,32 +16,31 @@ import urllib.parse
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
 def get_safari_compatible_cookie_settings():
     """
-    SAFARI-COMPATIBLE: Enhanced cookie settings that work across all browsers
-    Especially important for Safari's strict cookie policies
+    MOBILE-COMPATIBLE: Enhanced cookie settings for all mobile browsers
     """
     environment = os.getenv("ENVIRONMENT", "production")
-    
-    # For production (HTTPS required)
+
     if environment == "production":
         return {
-            "httponly": True,           # 🔒 Security: Prevent XSS attacks  
-            "secure": True,             # 🔒 CRITICAL: Safari requires HTTPS for cross-origin
-            "samesite": "none",         # 🌐 ESSENTIAL: Safari cross-origin requirement
-            "max_age": 24 * 3600,       # ⏰ 24 hours expiry
-            "path": "/",                # 🌍 Available across entire backend
-            # REMOVED "domain" - let browser handle it (better Safari compatibility)
+            "httponly": True,
+            "secure": True,  # Required for HTTPS
+            "samesite": "none",  # Essential for cross-origin
+            "max_age": 24 * 3600,
+            "path": "/",
+            # REMOVED domain setting for better mobile compatibility
         }
     else:
-        # For development (localhost)
         return {
             "httponly": True,
-            "secure": False,            # HTTP for localhost
-            "samesite": "lax",          # Safer for localhost
+            "secure": False,
+            "samesite": "lax",
             "max_age": 24 * 3600,
             "path": "/",
         }
+
 
 def add_safari_cors_headers(response: Response):
     """
@@ -54,6 +53,7 @@ def add_safari_cors_headers(response: Response):
     response.headers["Access-Control-Expose-Headers"] = "Set-Cookie"
     return response
 
+
 @router.get("/login")
 def login(redirect_to: Optional[str] = None):
     """
@@ -62,7 +62,7 @@ def login(redirect_to: Optional[str] = None):
     try:
         # Default redirect for Safari compatibility
         default_redirect = "https://techtuners-tt.github.io/SelfSound/#/home"
-        
+
         params = {
             "client_id": GOOGLE_CLIENT_ID,
             "redirect_uri": GOOGLE_REDIRECT_URI,
@@ -73,7 +73,7 @@ def login(redirect_to: Optional[str] = None):
             # Add include_granted_scopes for better Safari compatibility
             "include_granted_scopes": "true"
         }
-        
+
         if redirect_to:
             # Ensure the redirect URL is safe and from your domain
             if redirect_to.startswith("https://techtuners-tt.github.io"):
@@ -84,14 +84,15 @@ def login(redirect_to: Optional[str] = None):
             params["state"] = urllib.parse.quote(default_redirect)
 
         url = f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
-        
+
         logger.info(f"OAuth redirect URL: {url}")
         return RedirectResponse(url)
-        
+
     except Exception as e:
         logger.error(f"OAuth login error: {str(e)}")
         # Fallback redirect for Safari
         return RedirectResponse(url="https://techtuners-tt.github.io/SelfSound/#/sign-in?error=oauth_error")
+
 
 @router.get("/callback")
 async def auth_callback(request: Request):
@@ -101,10 +102,10 @@ async def auth_callback(request: Request):
     error = request.query_params.get("error")
     code = request.query_params.get("code")
     state = request.query_params.get("state")
-    
+
     # Default safe redirect
     default_redirect = "https://techtuners-tt.github.io/SelfSound/#/home"
-    
+
     # Decode the state parameter safely
     try:
         redirect_to = urllib.parse.unquote(state) if state else default_redirect
@@ -127,7 +128,7 @@ async def auth_callback(request: Request):
         # Exchange code for tokens
         google_response = await exchange_code_for_token(code)
         id_token_str = google_response.get('id_token')
-        
+
         if not id_token_str:
             logger.error("ID token missing from Google response")
             return RedirectResponse(url="https://techtuners-tt.github.io/SelfSound/#/sign-in?error=no_token")
@@ -201,13 +202,13 @@ async def auth_callback(request: Request):
 
         # Create response with Safari-compatible headers
         response = RedirectResponse(url=redirect_to, status_code=302)
-        
+
         # SAFARI FIX: Add CORS headers before setting cookies
         response = add_safari_cors_headers(response)
-        
+
         # Set the cookie with Safari-compatible settings
         response.set_cookie(
-            key="access_token", 
+            key="access_token",
             value=jwt_token,
             **cookie_settings
         )
@@ -217,13 +218,15 @@ async def auth_callback(request: Request):
 
     except ValueError as ve:
         logger.error(f"Token verification failed: {str(ve)}")
-        return RedirectResponse(url="https://techtuners-tt.github.io/SelfSound/#/sign-in?error=token_verification_failed")
+        return RedirectResponse(
+            url="https://techtuners-tt.github.io/SelfSound/#/sign-in?error=token_verification_failed")
     except httpx.HTTPStatusError as http_error:
         logger.error(f"HTTP error during OAuth: {http_error}")
         return RedirectResponse(url="https://techtuners-tt.github.io/SelfSound/#/sign-in?error=http_error")
     except Exception as e:
         logger.error(f"Unexpected OAuth error: {str(e)}")
         return RedirectResponse(url="https://techtuners-tt.github.io/SelfSound/#/sign-in?error=unexpected_error")
+
 
 async def exchange_code_for_token(code: str):
     """
@@ -243,17 +246,18 @@ async def exchange_code_for_token(code: str):
             logger.info("Exchanging OAuth code for tokens")
             response = await client.post(token_url, data=data)
             response.raise_for_status()
-            
+
             token_data = response.json()
             logger.info("Successfully exchanged code for tokens")
             return token_data
-            
+
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error during token exchange: {e.response.status_code} - {e.response.text}")
             raise HTTPException(status_code=e.response.status_code, detail="Error exchanging code for tokens")
         except Exception as e:
             logger.error(f"Unexpected error during token exchange: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Token exchange failed: {str(e)}")
+
 
 @router.get("/me/raw")
 def get_current_user_raw(request: Request):
@@ -268,15 +272,16 @@ def get_current_user_raw(request: Request):
     try:
         user_info = decode_jwt(token, verify_aud_iss=False)
         logger.info("Successfully retrieved user info from token")
-        
+
         # Create response with Safari-compatible headers
         response = JSONResponse(content={"user": user_info})
         response = add_safari_cors_headers(response)
         return response
-        
+
     except Exception as e:
         logger.error(f"Token validation failed: {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid token")
+
 
 @router.post("/logout")
 async def logout():
@@ -300,11 +305,11 @@ async def logout():
         # SAFARI FIX: Comprehensive cleanup with multiple configurations
         # This ensures cookies are removed regardless of how they were set
         cleanup_configs = [
-            {"path": "/", "secure": True, "samesite": "none"},      # Production HTTPS
-            {"path": "/", "secure": False, "samesite": "lax"},     # Development HTTP
-            {"path": "/", "secure": True, "samesite": "lax"},      # Mixed scenario
-            {"path": "/", "secure": False, "samesite": "none"},    # Edge case
-            {"path": "/"},                                          # Basic cleanup
+            {"path": "/", "secure": True, "samesite": "none"},  # Production HTTPS
+            {"path": "/", "secure": False, "samesite": "lax"},  # Development HTTP
+            {"path": "/", "secure": True, "samesite": "lax"},  # Mixed scenario
+            {"path": "/", "secure": False, "samesite": "none"},  # Edge case
+            {"path": "/"},  # Basic cleanup
         ]
 
         for config in cleanup_configs:
@@ -320,3 +325,25 @@ async def logout():
         logger.error(f"Logout error: {str(e)}")
         return JSONResponse(content={"message": "Logged out"})
 
+
+# ADDITIONAL SAFARI DEBUGGING ENDPOINT (REMOVE IN PRODUCTION)
+@router.get("/debug/safari")
+def debug_safari_compatibility(request: Request):
+    """
+    DEBUG: Check Safari compatibility (remove in production)
+    """
+    user_agent = request.headers.get("user-agent", "")
+    is_safari = "Safari" in user_agent and "Chrome" not in user_agent
+
+    cookie_settings = get_safari_compatible_cookie_settings()
+
+    return {
+        "user_agent": user_agent,
+        "is_safari": is_safari,
+        "cookie_settings": cookie_settings,
+        "cors_headers_needed": True,
+        "https_required": cookie_settings.get("secure", False),
+        "samesite_setting": cookie_settings.get("samesite"),
+        "oauth_redirect_uri": GOOGLE_REDIRECT_URI,
+        "frontend_origin": "https://techtuners-tt.github.io"
+    }
