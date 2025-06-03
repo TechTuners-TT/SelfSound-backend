@@ -1441,69 +1441,69 @@ async def toggle_like(
 
 @router.get("/user/{user_id}")
 async def get_user_posts(
-    user_id: str,
-    current_user: Optional[dict] = Depends(get_optional_user),
-    limit: int = 20,
-    offset: int = 0
+        user_id: str,
+        limit: int = Query(10, ge=1, le=50),
+        offset: int = Query(0, ge=0),
+        current_user: Optional[dict] = Depends(get_optional_user)
 ):
-    """Get posts from a specific user"""
+    """Get posts by a specific user with pagination - FIXED to include MusicXML and Lyrics"""
     try:
-        # Validate user_id is UUID
+        # Validate user_id is a valid UUID
         try:
             uuid.UUID(user_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid user ID format")
 
-        # Get posts
-        try:
-            posts_response = (
-                supabase.table("posts")
-                .select("*")
-                .eq("user_id", user_id)
-                .order("created_at", desc=True)
-                .range(offset, offset + limit - 1)
-                .execute()
-            )
-            posts = posts_response.data or []
-        except Exception as e:
-            logger.error(f"Error fetching user posts for user {user_id}: {str(e)}")
-            raise HTTPException(status_code=500, detail="Failed to fetch posts")
+        # Get posts for the user
+        posts_response = supabase.table("posts").select("*").eq("user_id", user_id).order("created_at",
+                                                                                          desc=True).range(offset,
+                                                                                                           offset + limit - 1).execute()
+        posts_data = posts_response.data or []
 
-        if not posts:
+        if not posts_data:
             return []
 
-        # Get user profile
+        # Get all post IDs for batch queries
+        post_ids = [post["id"] for post in posts_data]
+
+        # FIXED: Batch fetch all related data for better performance
         try:
-            user_response = (
-                supabase.table("user_profiles")
-                .select("id, name, login, avatar_url, tag_id")
-                .eq("id", user_id)
-                .single()
-                .execute()
-            )
+            # Get all media for these posts
+            media_response = supabase.table("post_media").select("*").in_("post_id", post_ids).order(
+                "order_index").execute()
+            media_data = media_response.data or []
+
+            # Get all audio for these posts
+            audio_response = supabase.table("post_audio").select("*").in_("post_id", post_ids).order(
+                "order_index").execute()
+            audio_data = audio_response.data or []
+
+            # FIXED: Get all musicxml for these posts
+            musicxml_response = supabase.table("post_musicxml").select("*").in_("post_id", post_ids).order(
+                "order_index").execute()
+            musicxml_data = musicxml_response.data or []
+
+            # FIXED: Get all lyrics for these posts
+            lyrics_response = supabase.table("post_lyrics").select("*").in_("post_id", post_ids).execute()
+            lyrics_data = lyrics_response.data or []
+
+        except Exception as e:
+            logger.error(f"Error fetching post related data: {str(e)}")
+            media_data = []
+            audio_data = []
+            musicxml_data = []
+            lyrics_data = []
+
+        # Get user profiles for all posts (though they should be the same user)
+        try:
+            user_response = supabase.table("user_profiles").select("id, name, login, avatar_url, tag_id").eq("id",
+                                                                                                             user_id).single().execute()
             user_data = user_response.data
         except Exception as e:
-            logger.error(f"Error fetching user profile for {user_id}: {str(e)}")
+            logger.error(f"Error fetching user profile: {str(e)}")
             user_data = {"id": user_id, "name": "Unknown User", "login": "unknown", "avatar_url": "", "tag_id": None}
 
-        # Get post IDs
-        post_ids = [post["id"] for post in posts]
-
-        # Get media for all posts
-        try:
-            media_response = (
-                supabase.table("post_media")
-                .select("*")
-                .in_("post_id", post_ids)
-                .order("order_index")
-                .execute()
-            )
-            media_data = media_response.data or []
-        except Exception as e:
-            logger.error(f"Error fetching media for user posts: {str(e)}")
-            media_data = []
-
-        # Group media by post_id
+        # FIXED: Group related data by post_id for efficient lookup
         media_by_post = {}
         for media in media_data:
             post_id = media["post_id"]
@@ -1511,21 +1511,6 @@ async def get_user_posts(
                 media_by_post[post_id] = []
             media_by_post[post_id].append(media)
 
-        # Get audio for all posts
-        try:
-            audio_response = (
-                supabase.table("post_audio")
-                .select("*")
-                .in_("post_id", post_ids)
-                .order("order_index")
-                .execute()
-            )
-            audio_data = audio_response.data or []
-        except Exception as e:
-            logger.error(f"Error fetching audio for user posts: {str(e)}")
-            audio_data = []
-
-        # Group audio by post_id
         audio_by_post = {}
         for audio in audio_data:
             post_id = audio["post_id"]
@@ -1533,29 +1518,35 @@ async def get_user_posts(
                 audio_by_post[post_id] = []
             audio_by_post[post_id].append(audio)
 
-        # Get likes for current user if authenticated
+        musicxml_by_post = {}
+        for musicxml in musicxml_data:
+            post_id = musicxml["post_id"]
+            if post_id not in musicxml_by_post:
+                musicxml_by_post[post_id] = []
+            musicxml_by_post[post_id].append(musicxml)
+
+        lyrics_by_post = {}
+        for lyrics in lyrics_data:
+            post_id = lyrics["post_id"]
+            lyrics_by_post[post_id] = lyrics
+
+        # Check user likes if authenticated
         user_likes = set()
         if current_user:
             try:
-                likes_response = (
-                    supabase.table("post_likes")
-                    .select("post_id")
-                    .in_("post_id", post_ids)
-                    .eq("user_id", current_user["id"])
-                    .execute()
-                )
-                if likes_response.data:
-                    user_likes = {like["post_id"] for like in likes_response.data}
+                likes_response = supabase.table("post_likes").select("post_id").eq("user_id", current_user["id"]).in_(
+                    "post_id", post_ids).execute()
+                user_likes = {like["post_id"] for like in likes_response.data or []}
             except Exception as e:
                 logger.error(f"Error fetching user likes: {str(e)}")
-                # Continue without likes data
 
-        # Format response
-        formatted_posts = []
-        for post in posts:
+        # FIXED: Build response with all post types including MusicXML and Lyrics
+        result = []
+        for post in posts_data:
             post_id = post["id"]
-            formatted_posts.append({
-                "id": post_id,
+
+            response_post = {
+                "id": post["id"],
                 "type": post["type"],
                 "caption": post.get("caption", ""),
                 "created_at": post["created_at"],
@@ -1585,10 +1576,33 @@ async def get_user_posts(
                         "order_index": audio["order_index"]
                     }
                     for audio in audio_by_post.get(post_id, [])
+                ],
+                "musicxml": [
+                    {
+                        "id": musicxml["id"],
+                        "title": musicxml["title"],
+                        "composer": musicxml["composer"],
+                        "file_url": musicxml["file_url"],
+                        "file_name": musicxml["file_name"],
+                        "order_index": musicxml["order_index"]
+                    }
+                    for musicxml in musicxml_by_post.get(post_id, [])
                 ]
-            })
+            }
 
-        return formatted_posts
+            # FIXED: Add lyrics data if it exists for this post
+            if post_id in lyrics_by_post:
+                lyrics = lyrics_by_post[post_id]
+                response_post["lyrics"] = {
+                    "title": lyrics["title"],
+                    "artist": lyrics["artist"],
+                    "lyrics_text": lyrics["lyrics_text"],
+                    "parts_data": lyrics.get("parts_data")
+                }
+
+            result.append(response_post)
+
+        return result
 
     except HTTPException:
         raise
@@ -1598,108 +1612,143 @@ async def get_user_posts(
 
 @router.get("/{post_id}")
 async def get_post(
-                post_id: str,
-                current_user: Optional[dict] = Depends(get_optional_user)
-        ):
-            """Get a specific post with its media and audio - THIS MUST COME LAST"""
+    post_id: str,
+    current_user: Optional[dict] = Depends(get_optional_user)
+):
+    """Get a specific post with its media, audio, musicxml, and lyrics - THIS MUST COME LAST"""
+    try:
+        # Validate that post_id is actually a UUID
+        try:
+            uuid.UUID(post_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid post ID format")
+
+        # Get post data
+        try:
+            post_response = supabase.table("posts").select("*").eq("id", post_id).single().execute()
+            post_data = post_response.data
+            if not post_data:
+                raise HTTPException(status_code=404, detail="Post not found")
+        except Exception as e:
+            if "404" in str(e) or "not found" in str(e).lower():
+                raise HTTPException(status_code=404, detail="Post not found")
+            logger.error(f"Error fetching post: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to fetch post")
+
+        # Get post media
+        try:
+            media_response = supabase.table("post_media").select("*").eq("post_id", post_id).order("order_index").execute()
+            media_data = media_response.data or []
+        except Exception as e:
+            logger.error(f"Error fetching media: {str(e)}")
+            media_data = []
+
+        # Get post audio
+        try:
+            audio_response = supabase.table("post_audio").select("*").eq("post_id", post_id).order("order_index").execute()
+            audio_data = audio_response.data or []
+        except Exception as e:
+            logger.error(f"Error fetching audio: {str(e)}")
+            audio_data = []
+
+        # Get post musicxml
+        try:
+            musicxml_response = supabase.table("post_musicxml").select("*").eq("post_id", post_id).order("order_index").execute()
+            musicxml_data = musicxml_response.data or []
+        except Exception as e:
+            logger.error(f"Error fetching musicxml: {str(e)}")
+            musicxml_data = []
+
+        # FIXED: Get post lyrics (this was missing!)
+        try:
+            lyrics_response = supabase.table("post_lyrics").select("*").eq("post_id", post_id).execute()
+            lyrics_data = lyrics_response.data[0] if lyrics_response.data else None
+        except Exception as e:
+            logger.error(f"Error fetching lyrics: {str(e)}")
+            lyrics_data = None
+
+        # Get user profile
+        try:
+            user_response = supabase.table("user_profiles").select("id, name, login, avatar_url, tag_id").eq(
+                "id", post_data["user_id"]).single().execute()
+            user_data = user_response.data
+        except Exception as e:
+            logger.error(f"Error fetching user profile: {str(e)}")
+            user_data = {"id": post_data["user_id"], "name": "Unknown User", "login": "unknown",
+                         "avatar_url": "", "tag_id": None}
+
+        # Check if current user liked this post
+        user_liked = False
+        if current_user:
             try:
-                # Validate that post_id is actually a UUID
-                try:
-                    uuid.UUID(post_id)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid post ID format")
-
-                # Get post data
-                try:
-                    post_response = supabase.table("posts").select("*").eq("id", post_id).single().execute()
-                    post_data = post_response.data
-                    if not post_data:
-                        raise HTTPException(status_code=404, detail="Post not found")
-                except Exception as e:
-                    if "404" in str(e) or "not found" in str(e).lower():
-                        raise HTTPException(status_code=404, detail="Post not found")
-                    print(f"Error fetching post: {str(e)}")
-                    raise HTTPException(status_code=500, detail="Failed to fetch post")
-
-                # Get post media
-                try:
-                    media_response = supabase.table("post_media").select("*").eq("post_id", post_id).order(
-                        "order_index").execute()
-                    media_data = media_response.data or []
-                except Exception as e:
-                    print(f"Error fetching media: {str(e)}")
-                    media_data = []
-
-                # Get post audio
-                try:
-                    audio_response = supabase.table("post_audio").select("*").eq("post_id", post_id).order(
-                        "order_index").execute()
-                    audio_data = audio_response.data or []
-                except Exception as e:
-                    print(f"Error fetching audio: {str(e)}")
-                    audio_data = []
-
-                # Get user profile
-                try:
-                    user_response = supabase.table("user_profiles").select("id, name, login, avatar_url, tag_id").eq(
-                        "id", post_data["user_id"]).single().execute()
-                    user_data = user_response.data
-                except Exception as e:
-                    print(f"Error fetching user profile: {str(e)}")
-                    user_data = {"id": post_data["user_id"], "name": "Unknown User", "login": "unknown",
-                                 "avatar_url": "", "tag_id": None}
-
-                # Check if current user liked this post
-                user_liked = False
-                if current_user:
-                    try:
-                        like_response = supabase.table("post_likes").select("id").eq("post_id", post_id).eq("user_id",
-                                                                                                            current_user[
-                                                                                                                "id"]).execute()
-                        user_liked = like_response.data and len(like_response.data) > 0
-                    except Exception as e:
-                        print(f"Error checking user likes: {str(e)}")
-
-                # Format response
-                return {
-                    "id": post_data["id"],
-                    "type": post_data["type"],
-                    "caption": post_data.get("caption", ""),
-                    "created_at": post_data["created_at"],
-                    "likes_count": post_data.get("likes_count", 0),
-                    "comments_count": post_data.get("comments_count", 0),
-                    "user": user_data,
-                    "user_liked": user_liked,
-                    "media": [
-                        {
-                            "id": media["id"],
-                            "file_url": media["file_url"],
-                            "file_type": media["file_type"],
-                            "file_name": media["file_name"],
-                            "order_index": media["order_index"]
-                        }
-                        for media in media_data
-                    ],
-                    "audio": [
-                        {
-                            "id": audio["id"],
-                            "title": audio["title"],
-                            "artist": audio["artist"],
-                            "file_url": audio["file_url"],
-                            "file_name": audio["file_name"],
-                            "cover_url": audio["cover_url"],
-                            "duration": audio["duration"],
-                            "order_index": audio["order_index"]
-                        }
-                        for audio in audio_data
-                    ]
-                }
-
-            except HTTPException:
-                raise
+                like_response = supabase.table("post_likes").select("id").eq("post_id", post_id).eq("user_id",
+                                                                                                    current_user["id"]).execute()
+                user_liked = like_response.data and len(like_response.data) > 0
             except Exception as e:
-                print(f"Error fetching post: {str(e)}")
-                raise HTTPException(status_code=500, detail="Failed to fetch post")
+                logger.error(f"Error checking user likes: {str(e)}")
+
+        # FIXED: Format response with all data types including lyrics and musicxml
+        response_data = {
+            "id": post_data["id"],
+            "type": post_data["type"],
+            "caption": post_data.get("caption", ""),
+            "created_at": post_data["created_at"],
+            "likes_count": post_data.get("likes_count", 0),
+            "comments_count": post_data.get("comments_count", 0),
+            "user": user_data,
+            "user_liked": user_liked,
+            "media": [
+                {
+                    "id": media["id"],
+                    "file_url": media["file_url"],
+                    "file_type": media["file_type"],
+                    "file_name": media["file_name"],
+                    "order_index": media["order_index"]
+                }
+                for media in media_data
+            ],
+            "audio": [
+                {
+                    "id": audio["id"],
+                    "title": audio["title"],
+                    "artist": audio["artist"],
+                    "file_url": audio["file_url"],
+                    "file_name": audio["file_name"],
+                    "cover_url": audio["cover_url"],
+                    "duration": audio["duration"],
+                    "order_index": audio["order_index"]
+                }
+                for audio in audio_data
+            ],
+            "musicxml": [
+                {
+                    "id": musicxml["id"],
+                    "title": musicxml["title"],
+                    "composer": musicxml["composer"],
+                    "file_url": musicxml["file_url"],
+                    "file_name": musicxml["file_name"],
+                    "order_index": musicxml["order_index"]
+                }
+                for musicxml in musicxml_data
+            ]
+        }
+
+        # FIXED: Add lyrics data if it exists
+        if lyrics_data:
+            response_data["lyrics"] = {
+                "title": lyrics_data["title"],
+                "artist": lyrics_data["artist"],
+                "lyrics_text": lyrics_data["lyrics_text"],
+                "parts_data": lyrics_data.get("parts_data")
+            }
+
+        return response_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching post: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch post")
 
 # ADD THIS TO YOUR post_router.py (after your audio endpoint)
 
