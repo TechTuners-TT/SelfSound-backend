@@ -1765,13 +1765,12 @@ async def create_musicxml_post(
     if not musicxml_files or len(musicxml_files) == 0:
         raise HTTPException(status_code=400, detail="At least one MusicXML file is required")
 
-    if len(musicxml_files) > 5:  # Limit number of MusicXML files
+    if len(musicxml_files) > 5:
         raise HTTPException(status_code=400, detail="Maximum 5 MusicXML files allowed per post")
 
     if len(titles) != len(musicxml_files) or len(composers) != len(musicxml_files):
         raise HTTPException(status_code=400, detail="Each MusicXML file must have a title and composer")
 
-    # Allowed MusicXML file types and extensions
     ALLOWED_XML_TYPES = {
         "application/xml", "text/xml", "application/musicxml",
         "application/vnd.recordare.musicxml", "application/vnd.recordare.musicxml+xml"
@@ -1780,8 +1779,6 @@ async def create_musicxml_post(
 
     try:
         user_id = current_user["id"]
-
-        # Validate all MusicXML files first
         validated_xml_files = []
         total_size = 0
 
@@ -1789,21 +1786,16 @@ async def create_musicxml_post(
             if not file.filename:
                 raise HTTPException(status_code=400, detail="All MusicXML files must have filenames")
 
-            # Check file extension (more reliable than MIME type for XML files)
             file_extension = os.path.splitext(file.filename.lower())[1]
-            if file_extension not in ALLOWED_XML_EXTENSIONS:
-                # Also check MIME type as fallback
-                if file.content_type not in ALLOWED_XML_TYPES:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"File {file.filename} is not a valid MusicXML file. Allowed extensions: .xml, .musicxml, .mxl"
-                    )
+            if file_extension not in ALLOWED_XML_EXTENSIONS and file.content_type not in ALLOWED_XML_TYPES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File {file.filename} is not a valid MusicXML file."
+                )
 
-            # Read file content to get actual size
             file_content = await file.read()
             actual_size = len(file_content)
 
-            # MusicXML files are usually small, but set a reasonable limit (10MB)
             if actual_size > 10 * 1024 * 1024:
                 raise HTTPException(
                     status_code=400,
@@ -1811,16 +1803,12 @@ async def create_musicxml_post(
                 )
 
             total_size += actual_size
-            # Reset file position for later use
             await file.seek(0)
-
             validated_xml_files.append((file, actual_size, titles[i], composers[i]))
 
-        # Check total size limit (50MB for all files combined)
         if total_size > 50 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="Total MusicXML file size exceeds 50MB limit")
 
-        # Create post record
         post_data = {
             "user_id": user_id,
             "type": "musicxml",
@@ -1828,29 +1816,20 @@ async def create_musicxml_post(
             "created_at": datetime.now(timezone.utc).isoformat()
         }
 
-        try:
-            post_response = supabase.table("posts").insert(post_data).execute()
-            post_id = post_response.data[0]["id"]
-            print(f"Created MusicXML post with ID: {post_id}")
-        except Exception as e:
-            print(f"Error creating MusicXML post: {str(e)}")
-            raise HTTPException(status_code=500, detail="Failed to create MusicXML post")
+        post_response = supabase.table("posts").insert(post_data).execute()
+        post_id = post_response.data[0]["id"]
 
-        # Upload MusicXML files and create records
         xml_records = []
         uploaded_files = []
 
         for index, (file, file_size, title, composer) in enumerate(validated_xml_files):
             try:
-                # Generate unique filename
                 file_extension = os.path.splitext(file.filename)[1]
                 unique_filename = f"{post_id}_{index}_{uuid.uuid4().hex[:8]}{file_extension}"
                 file_path = f"posts/{user_id}/musicxml/{unique_filename}"
 
-                # Upload MusicXML file to storage (reuse audio upload function)
                 public_url = await upload_audio_to_storage(file, file_path)
 
-                # Create MusicXML record
                 xml_data = {
                     "post_id": post_id,
                     "title": title.strip(),
@@ -1865,8 +1844,6 @@ async def create_musicxml_post(
                 uploaded_files.append(file_path)
 
             except Exception as e:
-                print(f"Error uploading MusicXML file {file.filename}: {str(e)}")
-                # Clean up any already uploaded files
                 for uploaded_file_path in uploaded_files:
                     try:
                         supabase.storage.from_(AUDIO_STORAGE_BUCKET).remove([uploaded_file_path])
@@ -1874,13 +1851,10 @@ async def create_musicxml_post(
                         pass
                 raise HTTPException(status_code=500, detail=f"Failed to upload {file.filename}")
 
-        # Insert all MusicXML records
         if xml_records:
             try:
-                xml_response = supabase.table("post_musicxml").insert(xml_records).execute()
+                supabase.table("post_musicxml").insert(xml_records).execute()
             except Exception as e:
-                print(f"Error creating MusicXML records: {str(e)}")
-                # Clean up uploaded files
                 for uploaded_file_path in uploaded_files:
                     try:
                         supabase.storage.from_(AUDIO_STORAGE_BUCKET).remove([uploaded_file_path])
@@ -1888,47 +1862,46 @@ async def create_musicxml_post(
                         pass
                 raise HTTPException(status_code=500, detail="Failed to create MusicXML records")
 
-        print(f"Successfully created MusicXML post with {len(xml_records)} files")
-
-        # Get user profile for complete response
         try:
-            user_response = supabase.table("user_profiles").select("id, name, login, avatar_url, tag_id").eq("id", user_id).single().execute()
+            user_response = supabase.table("user_profiles").select(
+                "id, name, login, avatar_url, tag_id"
+            ).eq("id", user_id).single().execute()
             user_data = user_response.data
-        except Exception as e:
-            print(f"Error fetching user profile: {str(e)}")
-            user_data = {"id": user_id, "name": "Unknown User", "login": "unknown", "avatar_url": "", "tag_id": None}
-
-        # Return complete post data for immediate display
-        return {
-            "message": "MusicXML post created successfully",
-            "post_id": post_id,
-            "post": {
-                "id": post_id,
-                "type": "musicxml",
-                "caption": caption or "",
-                "created_at": post_data["created_at"],
-                "likes_count": 0,
-                "comments_count": 0,
-                "user": user_data,
-                "user_liked": False,
-                "musicxml": [
-                    {
-                        "id": None,  # MusicXML IDs aren't returned from insert
-                        "title": xml["title"],
-                        "composer": xml["composer"],
-                        "file_url": xml["file_url"],
-                        "file_name": xml["file_name"],
-                        "order_index": xml["order_index"]
-                    }
-                    for xml in xml_records
-                ]
+        except Exception:
+            user_data = {
+                "id": user_id,
+                "name": "Unknown User",
+                "login": "unknown",
+                "avatar_url": "",
+                "tag_id": None
             }
+
+        response_data = {
+            "id": post_id,
+            "type": "musicxml",
+            "caption": post_data["caption"],
+            "created_at": post_data["created_at"],
+            "likes_count": 0,
+            "comments_count": 0,
+            "user": user_data,
+            "user_liked": False,
+            "musicxml": [
+                {
+                    "id": str(uuid.uuid4()),  # You can replace with actual ID if needed
+                    "title": xml["title"],
+                    "composer": xml["composer"],
+                    "file_url": xml["file_url"],
+                    "file_name": xml["file_name"],
+                    "order_index": xml["order_index"]
+                }
+                for xml in xml_records
+            ]
         }
 
-    except HTTPException:
-        raise
+        return response_data
+
     except Exception as e:
-        print(f"Unexpected error creating MusicXML post: {str(e)}")
+        logger.error(f"Unhandled error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create MusicXML post")
 
 
