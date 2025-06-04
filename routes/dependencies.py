@@ -7,23 +7,39 @@ logger = logging.getLogger(__name__)
 
 async def get_verified_user(request: Request) -> dict:
     """
-    Enhanced user verification supporting both mobile and web authentication
+    QUICK FIX: Enhanced token detection for mobile deployment
     """
     token = None
     
-    # Mobile first: Authorization header
+    # Check ALL possible token locations
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        logger.info("Using mobile auth (Authorization header)")
-    else:
-        # Web fallback: cookies
+        logger.info("✅ Token found in Authorization header")
+    elif request.cookies.get("access_token"):
         token = request.cookies.get("access_token")
-        if token:
-            logger.info("Using web auth (cookies)")
+        logger.info("✅ Token found in cookies")
+    elif request.query_params.get("token"):
+        token = request.query_params.get("token")
+        logger.info("✅ Token found in query params")
+    elif request.headers.get("x-access-token"):
+        token = request.headers.get("x-access-token")
+        logger.info("✅ Token found in X-Access-Token header")
+    elif request.headers.get("access-token"):
+        token = request.headers.get("access-token")
+        logger.info("✅ Token found in Access-Token header")
+    
+    # DEBUGGING: Log what we actually receive
+    logger.info(f"🔍 Available headers: {list(request.headers.keys())}")
+    logger.info(f"🔍 Available cookies: {list(request.cookies.keys())}")
+    logger.info(f"🔍 Query params: {dict(request.query_params)}")
+    logger.info(f"🔍 User-Agent: {request.headers.get('user-agent', 'Unknown')}")
     
     if not token:
-        logger.warning("No authentication token found")
+        logger.error("❌ [get_verified_user] No token found in any location")
+        # For debugging - log everything we can see
+        logger.error(f"Headers: {dict(request.headers)}")
+        logger.error(f"Cookies: {dict(request.cookies)}")
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
@@ -46,12 +62,12 @@ async def get_verified_user(request: Request) -> dict:
             raise HTTPException(status_code=404, detail="User not found")
         
         user_data = user_resp.data
-        logger.info(f"User authenticated: {login}")
+        logger.info(f"✅ User authenticated: {login}")
         
         return user_data
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Auth failed: {str(e)}")
+        logger.error(f"❌ Auth failed: {str(e)}")
         raise HTTPException(status_code=401, detail="Authentication failed")
