@@ -155,11 +155,10 @@ def login(request: Request, redirect_to: Optional[str] = None, mobile: Optional[
         # Fallback redirect for mobile
         return RedirectResponse(url="https://techtuners-tt.github.io/SelfSound/#/sign-in?error=oauth_error")
 
-
 @router.get("/callback")
 async def auth_callback(request: Request):
     """
-    MOBILE-COMPATIBLE: Enhanced callback with device-specific handling
+    FIXED: iOS Safari compatible OAuth callback
     """
     error = request.query_params.get("error")
     code = request.query_params.get("code")
@@ -269,27 +268,36 @@ async def auth_callback(request: Request):
         # Generate JWT token
         jwt_token = generate_jwt(id_info)
 
+        # 🔥 CRITICAL FIX: Always add token to URL for iOS Safari
+        logger.info(f"🔥 CRITICAL: Adding token to redirect URL for iOS Safari compatibility")
+        
+        # Parse the redirect URL to add token properly
+        if "?" in redirect_to:
+            redirect_to = f"{redirect_to}&token={jwt_token}"
+        else:
+            # Check if there's a hash fragment
+            if "#" in redirect_to:
+                base_url, fragment = redirect_to.split("#", 1)
+                redirect_to = f"{base_url}#{fragment}?token={jwt_token}"
+            else:
+                redirect_to = f"{redirect_to}?token={jwt_token}"
+        
+        logger.info(f"📱 Final redirect URL: {redirect_to}")
+
         # Enhanced mobile-compatible cookie settings
         cookie_settings = get_mobile_compatible_cookie_settings(request)
-
-        # Enhanced mobile handling
-        if is_mobile_callback:
-            # For mobile, always add token to URL
-            separator = "&" if "?" in redirect_to else "?"
-            redirect_to = f"{redirect_to}{separator}token={jwt_token}"
-            logger.info(f"📱 Mobile OAuth: Adding token to redirect URL")
 
         response = RedirectResponse(url=redirect_to, status_code=302)
         response = add_mobile_cors_headers(response, request)
 
-        # Set cookie with device-appropriate settings
+        # Set cookie with device-appropriate settings (backup method)
         response.set_cookie(
             key="access_token",
             value=jwt_token,
             **cookie_settings
         )
 
-        logger.info(f"✅ Google authentication successful for {email} (Mobile: {is_mobile_callback})")
+        logger.info(f"✅ Google authentication successful for {email} (iOS Safari: {is_ios_callback and is_safari_callback})")
         return response
 
     except ValueError as ve:
