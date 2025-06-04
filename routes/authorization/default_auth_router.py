@@ -41,24 +41,24 @@ COMMON_PASSWORDS = {"password", "123456", "12345678", "qwerty", "abc123"}
 
 def get_cookie_security_settings():
     """
-    PRODUCTION: Cookie security settings for cross-origin deployment
-    GitHub Pages (Frontend) -> Render (Backend)
+    MOBILE-COMPATIBLE: Cookie security settings for cross-origin deployment
     """
     environment = os.getenv("ENVIRONMENT", "production")
 
     if environment == "production":
         return {
-            "httponly": True,  # 🔒 Security: Prevent XSS attacks
-            "secure": True,  # 🔒 HTTPS only - CRITICAL for production
-            "samesite": "none",  # 🌐 CRUCIAL: Cross-origin requests (GitHub Pages -> Render)
-            "max_age": 24 * 3600,  # ⏰ 24 hours expiry
-            "path": "/",  # 🌍 Available across entire backend
+            "httponly": True,  # Security: Prevent XSS attacks
+            "secure": True,  # HTTPS only - required for production
+            "samesite": "none",  # CRUCIAL: Cross-origin requests
+            "max_age": 24 * 3600,  # 24 hours expiry
+            "path": "/",  # Available across entire backend
+            # REMOVED domain setting for better mobile compatibility
         }
     else:
         return {
-            "httponly": True,  # 🔒 Security even in development
-            "secure": False,  # 🏠 HTTP for localhost
-            "samesite": "none",  # 🏠 Same-site for development
+            "httponly": True,
+            "secure": False,  # HTTP for localhost
+            "samesite": "lax",  # Better for localhost
             "max_age": 24 * 3600,
             "path": "/",
         }
@@ -412,7 +412,7 @@ def login(user: UserLogin, response: Response):
         }
         access_token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-        # 🍪 PRODUCTION COOKIE: Use dynamic cookie settings
+        # MOBILE FIX: Enhanced cookie settings
         cookie_settings = get_cookie_security_settings()
 
         response.set_cookie(
@@ -423,8 +423,10 @@ def login(user: UserLogin, response: Response):
 
         logger.info("User login successful")
 
+        # MOBILE FIX: Return token in response for mobile fallback
         return {
             "message": "Login successful",
+            "access_token": access_token,  # ADD THIS LINE
             "user": {
                 "id": user_data["id"],
                 "email": user_data["email"],
@@ -526,3 +528,79 @@ async def logout(response: Response):
     except Exception as e:
         logger.error(f"Logout error: {e}")
         return {"message": "Logged out"}
+
+
+@router.get("/debug/mobile-auth")
+async def debug_mobile_auth(request: Request):
+    """Debug mobile authentication issues"""
+
+    headers = dict(request.headers)
+    cookies = dict(request.cookies)
+
+    user_agent = headers.get("user-agent", "")
+    is_mobile = any(device in user_agent.lower() for device in ["mobile", "android", "iphone", "ipad"])
+    is_safari = "safari" in user_agent.lower() and "chrome" not in user_agent.lower()
+
+    auth_token = None
+    auth_source = None
+
+    auth_header = headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        auth_token = auth_header[7:]
+        auth_source = "authorization_header"
+
+    cookie_token = cookies.get("access_token")
+    if cookie_token and not auth_token:
+        auth_token = cookie_token
+        auth_source = "cookie"
+
+    token_valid = False
+    token_error = None
+    user_info = None
+
+    if auth_token:
+        try:
+            payload = decode_jwt(auth_token)
+            token_valid = True
+            user_info = {
+                "sub": payload.get("sub"),
+                "email": payload.get("email"),
+                "name": payload.get("name")
+            }
+        except Exception as e:
+            token_error = str(e)
+
+    return {
+        "device_info": {
+            "user_agent": user_agent,
+            "is_mobile": is_mobile,
+            "is_safari": is_safari
+        },
+        "authentication": {
+            "has_auth_header": "authorization" in headers,
+            "has_cookie": "access_token" in cookies,
+            "auth_token_found": auth_token is not None,
+            "auth_source": auth_source,
+            "token_valid": token_valid,
+            "token_error": token_error,
+            "user_info": user_info
+        },
+        "cookies": {
+            "access_token_present": "access_token" in cookies,
+            "cookie_count": len(cookies)
+        }
+    }
+
+
+@router.get("/debug/test-auth")
+async def test_auth_endpoint(current_user: dict = Depends(get_verified_user)):
+    """Test if authentication works"""
+    return {
+        "success": True,
+        "message": "Authentication working correctly",
+        "user": {
+            "id": current_user.get("id"),
+            "email": current_user.get("email"),
+            "name": current_user.get("name")
+        }
+    }
