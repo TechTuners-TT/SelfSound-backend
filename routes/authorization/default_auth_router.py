@@ -39,26 +39,69 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 COMMON_PASSWORDS = {"password", "123456", "12345678", "qwerty", "abc123"}
 
 
-def get_cookie_security_settings():
+def detect_mobile_browser(request: Request) -> tuple[bool, bool, bool]:
     """
-    MOBILE-COMPATIBLE: Cookie security settings for cross-origin deployment
+    Enhanced mobile detection for better cookie handling
+    Returns: (is_mobile, is_ios, is_safari)
+    """
+    user_agent = request.headers.get("user-agent", "").lower()
+    
+    # Mobile detection
+    mobile_keywords = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'blackberry', 'windows phone']
+    is_mobile = any(keyword in user_agent for keyword in mobile_keywords)
+    
+    # iOS detection
+    is_ios = any(keyword in user_agent for keyword in ['iphone', 'ipad', 'ipod'])
+    
+    # Safari detection (but not Chrome on iOS)
+    is_safari = 'safari' in user_agent and 'chrome' not in user_agent
+    
+    return is_mobile, is_ios, is_safari
+
+
+def get_mobile_compatible_cookie_settings(request: Request):
+    """
+    MOBILE-COMPATIBLE: Dynamic cookie security settings based on device
     """
     environment = os.getenv("ENVIRONMENT", "production")
-
+    is_mobile, is_ios, is_safari = detect_mobile_browser(request)
+    
+    logger.info(f"🔍 Cookie settings - Mobile: {is_mobile}, iOS: {is_ios}, Safari: {is_safari}")
+    
     if environment == "production":
-        return {
-            "httponly": True,  # Security: Prevent XSS attacks
-            "secure": True,  # HTTPS only - required for production
-            "samesite": "none",  # CRUCIAL: Cross-origin requests
-            "max_age": 24 * 3600,  # 24 hours expiry
-            "path": "/",  # Available across entire backend
-            # REMOVED domain setting for better mobile compatibility
-        }
+        if is_ios and is_safari:
+            # iOS Safari has issues with SameSite=None
+            return {
+                "httponly": True,
+                "secure": True,  # Still need HTTPS
+                "samesite": "lax",  # Better for iOS Safari
+                "max_age": 24 * 3600,
+                "path": "/",
+            }
+        elif is_mobile:
+            # Other mobile browsers
+            return {
+                "httponly": True,
+                "secure": True,
+                "samesite": "none",  # Cross-origin support
+                "max_age": 24 * 3600,
+                "path": "/",
+            }
+        else:
+            # Desktop browsers
+            return {
+                "httponly": True,
+                "secure": True,
+                "samesite": "none",
+                "max_age": 24 * 3600,
+                "path": "/",
+            }
     else:
+        # Development settings
         return {
             "httponly": True,
-            "secure": False,  # HTTP for localhost
-            "samesite": "lax",  # Better for localhost
+            "secure": False,
+            "samesite": "lax",
             "max_age": 24 * 3600,
             "path": "/",
         }
@@ -350,7 +393,7 @@ async def verify_email_simple(token: str):
 
         # Redirect to sign-in page with success message
         return RedirectResponse(
-            url=f"{FRONTEND_REDIRECT_URL}/#/sign-in?success=email_verified",
+            url=f"{FRONTEND_REDIRECT_URL}/#/sign-in?verified=true",
             status_code=302
         )
 
@@ -390,8 +433,11 @@ async def resend_verification(email_data: dict, background_tasks: BackgroundTask
 
 
 @router.post("/logindefault")
-def login(user: UserLogin, response: Response):
+def login(user: UserLogin, request: Request, response: Response):
     try:
+        is_mobile, is_ios, is_safari = detect_mobile_browser(request)
+        logger.info(f"📱 Login attempt - Mobile: {is_mobile}, iOS: {is_ios}, Safari: {is_safari}")
+        
         user_record = supabase.table("users").select("*").eq("email", user.email).single().execute()
 
         if not user_record.data:
@@ -408,12 +454,15 @@ def login(user: UserLogin, response: Response):
         payload = {
             "sub": user_data["id"],
             "email": user_data["email"],
+            "name": user_data["name"],
             "exp": datetime.utcnow() + timedelta(hours=24)
         }
         access_token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-        # MOBILE FIX: Enhanced cookie settings
-        cookie_settings = get_cookie_security_settings()
+        # Enhanced mobile-compatible cookie settings
+        cookie_settings = get_mobile_compatible_cookie_settings(request)
+        
+        logger.info(f"🍪 Setting cookie with settings: {cookie_settings}")
 
         response.set_cookie(
             key="access_token",
@@ -421,20 +470,23 @@ def login(user: UserLogin, response: Response):
             **cookie_settings
         )
 
-        logger.info("User login successful")
-
-        # MOBILE FIX: Return token in response for mobile fallback
-        return {
+        # Enhanced mobile response
+        response_data = {
             "message": "Login successful",
-            "access_token": access_token,  # ADD THIS LINE
+            "access_token": access_token,  # Always return token for mobile fallback
             "user": {
                 "id": user_data["id"],
                 "email": user_data["email"],
                 "name": user_data["name"],
                 "verified": user_data.get("verified", False)
             },
-            "expires_in": 24 * 3600
+            "expires_in": 24 * 3600,
+            "mobile_detected": is_mobile,  # Help frontend understand device type
+            "ios_safari": is_ios and is_safari
         }
+
+        logger.info(f"✅ Login successful for {user_data['email']} (Mobile: {is_mobile})")
+        return response_data
 
     except Exception as e:
         logger.error(f"Login error: {e}")
@@ -474,6 +526,7 @@ def delete_user_from_supabase_auth(user_id: str) -> bool:
 
 @router.delete("/me", status_code=204)
 def delete_user_account(
+        request: Request,
         response: Response,
         user: dict = Depends(get_verified_user)
 ):
@@ -485,8 +538,8 @@ def delete_user_account(
     if not delete_user_from_supabase_auth(user_id):
         raise HTTPException(status_code=500, detail="Failed to delete user from Supabase Auth")
 
-    # 🍪 PRODUCTION COOKIE: Clean up cookies properly
-    cookie_settings = get_cookie_security_settings()
+    # Enhanced mobile-compatible cookie cleanup
+    cookie_settings = get_mobile_compatible_cookie_settings(request)
     response.delete_cookie(
         key="access_token",
         path="/",
@@ -498,10 +551,13 @@ def delete_user_account(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(request: Request, response: Response):
     try:
-        # 🍪 PRODUCTION COOKIE: Clean up cookies properly
-        cookie_settings = get_cookie_security_settings()
+        is_mobile, is_ios, is_safari = detect_mobile_browser(request)
+        logger.info(f"📱 Logout attempt - Mobile: {is_mobile}, iOS: {is_ios}, Safari: {is_safari}")
+        
+        # Enhanced mobile-compatible cookie cleanup
+        cookie_settings = get_mobile_compatible_cookie_settings(request)
 
         response.delete_cookie(
             key="access_token",
@@ -510,10 +566,11 @@ async def logout(response: Response):
             samesite=cookie_settings["samesite"]
         )
 
-        # 🧹 Backup cleanup with different settings to ensure removal
+        # Enhanced cleanup for different cookie configurations
         backup_configs = [
             {"path": "/", "secure": True, "samesite": "none"},
-            {"path": "/", "secure": False, "samesite": "none"},
+            {"path": "/", "secure": True, "samesite": "lax"},
+            {"path": "/", "secure": False, "samesite": "lax"},
             {"path": "/"},
         ]
 
@@ -524,7 +581,10 @@ async def logout(response: Response):
                 pass  # Ignore cleanup errors
 
         logger.info("User logged out successfully")
-        return {"message": "Logged out successfully"}
+        return {
+            "message": "Logged out successfully",
+            "mobile_detected": is_mobile
+        }
     except Exception as e:
         logger.error(f"Logout error: {e}")
         return {"message": "Logged out"}
@@ -532,14 +592,13 @@ async def logout(response: Response):
 
 @router.get("/debug/mobile-auth")
 async def debug_mobile_auth(request: Request):
-    """Debug mobile authentication issues"""
-
+    """Enhanced debug mobile authentication issues"""
+    
     headers = dict(request.headers)
     cookies = dict(request.cookies)
-
+    
+    is_mobile, is_ios, is_safari = detect_mobile_browser(request)
     user_agent = headers.get("user-agent", "")
-    is_mobile = any(device in user_agent.lower() for device in ["mobile", "android", "iphone", "ipad"])
-    is_safari = "safari" in user_agent.lower() and "chrome" not in user_agent.lower()
 
     auth_token = None
     auth_source = None
@@ -570,11 +629,16 @@ async def debug_mobile_auth(request: Request):
         except Exception as e:
             token_error = str(e)
 
+    # Get current cookie settings for this device
+    cookie_settings = get_mobile_compatible_cookie_settings(request)
+
     return {
         "device_info": {
             "user_agent": user_agent,
             "is_mobile": is_mobile,
-            "is_safari": is_safari
+            "is_ios": is_ios,
+            "is_safari": is_safari,
+            "recommended_cookie_settings": cookie_settings
         },
         "authentication": {
             "has_auth_header": "authorization" in headers,
@@ -587,7 +651,15 @@ async def debug_mobile_auth(request: Request):
         },
         "cookies": {
             "access_token_present": "access_token" in cookies,
-            "cookie_count": len(cookies)
+            "cookie_count": len(cookies),
+            "all_cookies": list(cookies.keys())
+        },
+        "headers": {
+            "relevant_headers": {
+                "authorization": headers.get("authorization", "Not present"),
+                "cookie": headers.get("cookie", "Not present"),
+                "user-agent": headers.get("user-agent", "Not present")
+            }
         }
     }
 
