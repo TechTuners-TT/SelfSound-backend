@@ -676,3 +676,158 @@ async def test_auth_endpoint(current_user: dict = Depends(get_verified_user)):
             "name": current_user.get("name")
         }
     }
+    # Add this to your default_auth_router.py for debugging iOS Safari issues
+
+@router.get("/debug/ios-safari-auth")
+async def debug_ios_safari_auth(request: Request):
+    """
+    Special debug endpoint for iOS Safari authentication issues
+    """
+    headers = dict(request.headers)
+    cookies = dict(request.cookies)
+    query_params = dict(request.query_params)
+    
+    # Enhanced mobile detection
+    user_agent = headers.get("user-agent", "").lower()
+    is_mobile = any(keyword in user_agent for keyword in ['mobile', 'android', 'iphone', 'ipad', 'ipod'])
+    is_ios = any(keyword in user_agent for keyword in ['iphone', 'ipad', 'ipod'])
+    is_safari = 'safari' in user_agent and 'chrome' not in user_agent and 'crios' not in user_agent
+    is_ios_safari = is_ios and is_safari
+
+    # Check all possible auth sources
+    auth_sources = {}
+    
+    # 1. Authorization header
+    auth_header = headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        auth_sources["authorization_header"] = {
+            "present": True,
+            "token_length": len(token),
+            "token_preview": token[:50] + "..." if len(token) > 50 else token,
+            "valid_format": True
+        }
+        
+        # Try to decode this token
+        try:
+            payload = decode_jwt(token)
+            auth_sources["authorization_header"]["valid_token"] = True
+            auth_sources["authorization_header"]["user_id"] = payload.get("sub")
+            auth_sources["authorization_header"]["email"] = payload.get("email")
+        except Exception as e:
+            auth_sources["authorization_header"]["valid_token"] = False
+            auth_sources["authorization_header"]["decode_error"] = str(e)
+    else:
+        auth_sources["authorization_header"] = {
+            "present": bool(auth_header),
+            "valid_format": False,
+            "raw_value": auth_header
+        }
+
+    # 2. Cookies
+    access_token_cookie = cookies.get("access_token")
+    if access_token_cookie:
+        auth_sources["cookie"] = {
+            "present": True,
+            "token_length": len(access_token_cookie),
+            "token_preview": access_token_cookie[:50] + "..." if len(access_token_cookie) > 50 else access_token_cookie
+        }
+        
+        try:
+            payload = decode_jwt(access_token_cookie)
+            auth_sources["cookie"]["valid_token"] = True
+            auth_sources["cookie"]["user_id"] = payload.get("sub")
+            auth_sources["cookie"]["email"] = payload.get("email")
+        except Exception as e:
+            auth_sources["cookie"]["valid_token"] = False
+            auth_sources["cookie"]["decode_error"] = str(e)
+    else:
+        auth_sources["cookie"] = {"present": False}
+
+    # 3. Query parameters
+    query_token = query_params.get("token")
+    if query_token:
+        auth_sources["query_param"] = {
+            "present": True,
+            "token_length": len(query_token),
+            "token_preview": query_token[:50] + "..." if len(query_token) > 50 else query_token
+        }
+        
+        try:
+            payload = decode_jwt(query_token)
+            auth_sources["query_param"]["valid_token"] = True
+            auth_sources["query_param"]["user_id"] = payload.get("sub")
+            auth_sources["query_param"]["email"] = payload.get("email")
+        except Exception as e:
+            auth_sources["query_param"]["valid_token"] = False
+            auth_sources["query_param"]["decode_error"] = str(e)
+    else:
+        auth_sources["query_param"] = {"present": False}
+
+    # Get recommended cookie settings for this device
+    cookie_settings = get_mobile_compatible_cookie_settings(request)
+
+    # Test authentication with current setup
+    auth_test_result = None
+    try:
+        user = await get_verified_user(request)
+        auth_test_result = {
+            "success": True,
+            "user_id": user.get("id"),
+            "email": user.get("email"),
+            "auth_source": user.get("auth_source")
+        }
+    except HTTPException as e:
+        auth_test_result = {
+            "success": False,
+            "error_code": e.status_code,
+            "error_detail": e.detail
+        }
+    except Exception as e:
+        auth_test_result = {
+            "success": False,
+            "error": str(e)
+        }
+
+    return {
+        "device_detection": {
+            "user_agent": headers.get("user-agent", ""),
+            "is_mobile": is_mobile,
+            "is_ios": is_ios,
+            "is_safari": is_safari,
+            "is_ios_safari": is_ios_safari,
+            "problematic_combination": is_ios_safari
+        },
+        "authentication_sources": auth_sources,
+        "cookie_configuration": {
+            "recommended_settings": cookie_settings,
+            "ios_safari_optimized": is_ios_safari,
+            "samesite_setting": cookie_settings.get("samesite"),
+            "secure_setting": cookie_settings.get("secure"),
+            "httponly_setting": cookie_settings.get("httponly")
+        },
+        "current_auth_test": auth_test_result,
+        "headers_received": {
+            "authorization": headers.get("authorization", "Not present"),
+            "cookie": headers.get("cookie", "Not present"),
+            "user_agent": headers.get("user-agent", "Not present"),
+            "cache_control": headers.get("cache-control", "Not present"),
+            "pragma": headers.get("pragma", "Not present")
+        },
+        "all_cookies": list(cookies.keys()),
+        "all_query_params": list(query_params.keys()),
+        "recommendations": {
+            "ios_safari_issues": [
+                "iOS Safari has strict cookie policies",
+                "Use Authorization header instead of cookies",
+                "SameSite=Lax works better than SameSite=None",
+                "Store tokens in localStorage/sessionStorage",
+                "Add cache-control headers to prevent caching"
+            ] if is_ios_safari else [],
+            "general_mobile": [
+                "Prefer Authorization header over cookies",
+                "Use multiple token storage strategies",
+                "Implement token recovery mechanisms"
+            ] if is_mobile else []
+        }
+    }
