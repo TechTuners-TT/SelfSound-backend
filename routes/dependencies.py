@@ -1,307 +1,665 @@
-from fastapi import Request, HTTPException
-from supabase_client import supabase
-from jwt_handler import decode_jwt
-import logging
+<template>
+  <div class="relative w-full min-h-screen flex flex-col bg-[#060310]">
+    <!-- Main content -->
+    <main class="flex flex-col flex-grow overflow-auto">
+      <!-- Nav Bar -->
+      <NavBar />
 
-logger = logging.getLogger(__name__)
+      <!-- Content -->
+      <div class="flex-grow max-h-full">
+        <div class="relative flex items-start justify-center w-full h-full">
+          <div
+            class="gap-[20px] sm:gap-[20px] md:gap-[25px] lg:gap-[30px] xl:gap-[35px] 2xl:gap-10 relative w-full md:w-3/5 xl:w-1/3 bg-black/30 flex flex-col min-h-screen overflow-y-auto"
+          >
+            <!-- Loading state -->
+            <div
+              v-if="isLoading && !user.id"
+              class="flex justify-center items-center min-h-[400px]"
+            >
+              <div
+                class="animate-spin rounded-full h-12 w-12 border-b-2 border-white"
+              ></div>
+            </div>
 
+            <!-- Profile sections (only show when user data is loaded) -->
+            <template v-else>
+              <!-- Section 1 - Profile Header -->
+              <section
+                class="px-[10px] sm:px-[40px] md:px-[20px] lg:px-[30px] xl:px-[20px] 2xl:px-[40px]"
+              >
+                <ProfileHeader :user="displayUser" :stats="stats" />
+              </section>
 
-def detect_mobile_browser(request: Request) -> tuple[bool, bool, bool]:
-    """
-    Enhanced mobile detection for better token handling
-    Returns: (is_mobile, is_ios, is_safari)
-    """
-    user_agent = request.headers.get("user-agent", "").lower()
-    
-    # Mobile detection
-    mobile_keywords = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'blackberry', 'windows phone']
-    is_mobile = any(keyword in user_agent for keyword in mobile_keywords)
-    
-    # iOS detection
-    is_ios = any(keyword in user_agent for keyword in ['iphone', 'ipad', 'ipod'])
-    
-    # Safari detection (but not Chrome on iOS)
-    is_safari = 'safari' in user_agent and 'chrome' not in user_agent and 'crios' not in user_agent
-    
-    return is_mobile, is_ios, is_safari
+              <!-- Section 2 - Profile Content (includes edit modal and posts) -->
+              <section>
+                <ProfileContent :user="displayUser" @update:user="updateUser" />
+              </section>
 
+              <!-- Posts Feed Section -->
+              <section class="mt-4">
+                <div
+                  class="w-full h-px border border-[rgba(255,255,255,0.5)]"
+                ></div>
 
-async def get_verified_user(request: Request):
-    """
-    🔥 ENHANCED: Mobile-compatible authentication with improved error handling
-    Supports both Authorization headers (mobile) AND cookies (web)
-    """
-    token = None
-    auth_source = None
-    
-    # Enhanced mobile detection
-    is_mobile, is_ios, is_safari = detect_mobile_browser(request)
-    
-    logger.info(f"📱 Auth request - Mobile: {is_mobile}, iOS: {is_ios}, Safari: {is_safari}")
+                <!-- Posts Feed -->
+                <div class="mt-4">
+                  <!-- Loading State -->
+                  <div
+                    v-if="isLoadingPosts && posts.length === 0"
+                    class="text-white text-center py-8"
+                  >
+                    <div
+                      class="animate-spin rounded-full h-8 w-8 border-b-2 border-[#6D01D0] mx-auto mb-4"
+                    ></div>
+                    Loading posts...
+                  </div>
 
-    # PRIORITY 1: Authorization header (mobile-first approach)
-    auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-        auth_source = "header"
-        logger.info(f"📱 MOBILE AUTH: Found Bearer token in Authorization header")
+                  <!-- Error State -->
+                  <div
+                    v-if="postsError"
+                    class="text-red-400 text-center py-4 mb-4"
+                  >
+                    {{ postsError }}
+                    <button
+                      @click="handleRetry"
+                      class="block mx-auto mt-2 text-[#6D01D0] hover:text-[#8B4CD8]"
+                    >
+                      Try Again
+                    </button>
+                  </div>
 
-    # PRIORITY 2: Fallback to cookies (web browsers)
-    if not token:
-        token = request.cookies.get("access_token")
-        if token:
-            auth_source = "cookie"
-            logger.info(f"🍪 WEB AUTH: Access token from cookies")
+                  <!-- Empty State -->
+                  <div
+                    v-if="!isLoadingPosts && !postsError && posts.length === 0"
+                    class="text-gray-400 text-center py-8"
+                  >
+                    <p class="text-lg mb-2">No posts yet</p>
+                    <p class="text-sm">Be the first to share something!</p>
+                  </div>
 
-    # PRIORITY 3: Check for token in query parameters (mobile OAuth callback)
-    if not token:
-        token = request.query_params.get("token")
-        if token:
-            auth_source = "query_param"
-            logger.info(f"🔗 OAUTH AUTH: Token from query parameter")
+                  <!-- Posts -->
+                  <PostCard v-for="post in posts" :key="post.id" :post="post" />
 
-    if not token:
-        logger.warning(f"❌ [get_verified_user] No token found (Mobile: {is_mobile}, iOS Safari: {is_ios and is_safari})")
-        
-        # Enhanced error message for mobile debugging
-        if is_mobile:
-            raise HTTPException(
-                status_code=401, 
-                detail="No authentication token provided (mobile device detected - ensure Authorization header is set)"
-            )
-        else:
-            raise HTTPException(status_code=401, detail="No authentication token provided")
+                  <!-- Load More Button -->
+                  <div
+                    v-if="hasMore && posts.length > 0"
+                    class="text-center mt-8 pb-8"
+                  >
+                    <button
+                      @click="handleLoadMore"
+                      :disabled="isLoadingMore"
+                      class="bg-[#6D01D0] hover:bg-[#5a0ba8] disabled:bg-gray-600 text-white px-6 py-2 rounded-lg transition-colors disabled:cursor-not-allowed"
+                    >
+                      {{ isLoadingMore ? "Loading..." : "Load More" }}
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </template>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div class="max-md:pb-15"></div>
+</template>
 
-    logger.info(f"✅ [get_verified_user] Using token from: {auth_source} (Mobile: {is_mobile})")
+<script setup lang="ts">
+import { reactive, ref, onMounted, computed } from "vue";
+import NavBar from "@/components/Navigation/NavBar.vue";
+import ProfileHeader from "@/components/userProfile/ProfileHeader.vue";
+import ProfileContent from "@/components/userProfile/ProfileContent.vue";
+import PostCard from "@/components/Posts_Feed_Components/PostCard.vue";
 
-    try:
-        # Enhanced JWT decoding with better error handling
-        payload = decode_jwt(token)
-        logger.info(f"🔓 [get_verified_user] Decoded JWT payload successfully")
+// Get API URL from environment variable
+const API_URL = import.meta.env.VITE_API_URL;
 
-        user_sub = payload.get("sub")
-        user_email = payload.get("email")
-        logger.info(f"👤 [get_verified_user] Extracted sub: {user_sub}, email: {user_email}")
+interface User {
+  id?: string;
+  name: string;
+  login: string;
+  avatarUrl: string;
+  biography: string;
+  tag?: string | null;
+}
 
-        if not user_sub and not user_email:
-            logger.error("❌ [get_verified_user] No user identifier found in token")
-            raise HTTPException(status_code=401, detail="Invalid token: missing user identifier")
+interface Stats {
+  posts: number;
+  listeners: number;
+  listenedTo: number;
+}
 
-        user_resp = None
+// Backend post interface for transformation
+interface BackendPost {
+  id: string;
+  type: string;
+  caption?: string;
+  created_at: string;
+  likes_count: number;
+  comments_count: number;
+  user_liked: boolean;
+  user: {
+    id: string;
+    login: string;
+    name: string;
+    tag_id: string | null;
+    avatar_url?: string;
+  };
+  media?: Array<{
+    id: string;
+    file_url: string;
+    file_type: string;
+  }>;
+  audio?: Array<{
+    title: string;
+    artist: string;
+    cover_url?: string;
+    duration?: string;
+    file_url: string;
+  }>;
+  musicxml?: Array<{
+    title: string;
+    composer: string;
+    file_url: string;
+  }>;
+  lyrics?: {
+    title: string;
+    artist: string;
+    lyrics_text: string;
+  };
+}
 
-        # 🔥 STRATEGY 1: Try user_profiles table first (your current structure)
-        if user_email:
-            try:
-                # Extract login from email for user_profiles lookup
-                login = user_email.split("@")[0]
-                user_resp = supabase.from_("user_profiles").select("*").eq("login", login).single().execute()
-                logger.info(f"🔍 [get_verified_user] Found user in user_profiles table: {login}")
-                
-                if user_resp.data:
-                    # Convert user_profiles format to expected format
-                    profile_data = user_resp.data
-                    return {
-                        "id": profile_data.get("id"),
-                        "sub": user_sub,
-                        "email": user_email,
-                        "name": profile_data.get("name", ""),
-                        "login": profile_data.get("login", login),
-                        "verified": True,  # OAuth users are verified
-                        "provider": "google" if "google" in str(payload) else "email",
-                        "email_confirmed": True,
-                        "auth_source": auth_source,
-                        "mobile_detected": is_mobile,
-                        # Include profile-specific fields
-                        "avatar_url": profile_data.get("avatar_url"),
-                        "description": profile_data.get("description"),
-                        "tag_id": profile_data.get("tag_id"),
-                    }
-            except Exception as e:
-                logger.warning(f"⚠️ [get_verified_user] user_profiles lookup failed: {str(e)}")
-                user_resp = None
+// Post interfaces from PostFeed.vue
+interface PostBase {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  role: "Musician" | "Listener" | "Learner";
+  avatarUrl: string;
+  timestamp: string;
+  type: "audio" | "musicxml" | "media" | "lyrics";
+  likes_count?: number;
+  comments_count?: number;
+  user_liked?: boolean;
+  caption?: string;
+}
 
-        # 🔥 STRATEGY 2: Fallback to users table (if exists)
-        if user_resp is None or user_resp.data is None:
-            if user_sub:
-                try:
-                    user_resp = supabase.table("users").select("*").eq("sub", user_sub).single().execute()
-                    logger.info(f"🔍 [get_verified_user] Found user in users table by sub")
-                except Exception as e:
-                    logger.warning(f"⚠️ [get_verified_user] Sub lookup failed: {str(e)}")
-                    user_resp = None
+interface AudioPost extends PostBase {
+  type: "audio";
+  content: {
+    title: string;
+    artist: string;
+    coverUrl: string;
+    duration: string;
+    url: string;
+  }[];
+}
 
-            # Try by email if sub failed
-            if (user_resp is None or user_resp.data is None) and user_email:
-                try:
-                    user_resp = supabase.table("users").select("*").eq("email", user_email).single().execute()
-                    logger.info(f"🔍 [get_verified_user] Found user in users table by email")
-                except Exception as e:
-                    logger.warning(f"⚠️ [get_verified_user] Email lookup failed: {str(e)}")
-                    user_resp = None
+interface XmlPost extends PostBase {
+  type: "musicxml";
+  content: {
+    fileName: string;
+    composer: string;
+    downloadUrl: string;
+  }[];
+}
 
-        if user_resp is None or user_resp.data is None:
-            logger.error("❌ [get_verified_user] User not found in any table")
-            
-            # Enhanced error for mobile debugging
-            if is_mobile:
-                raise HTTPException(
-                    status_code=401, 
-                    detail=f"User not found (mobile device detected, token source: {auth_source})"
-                )
-            else:
-                raise HTTPException(status_code=401, detail="User not found")
+interface MediaPost extends PostBase {
+  type: "media";
+  content: {
+    mediaType: "media";
+    items: {
+      src: string;
+      type: "image" | "video";
+      id?: string;
+    }[];
+  };
+}
 
-        user_data = user_resp.data
-        provider = user_data.get("provider", "email")
-        is_verified = user_data.get("verified", False)
+interface LyricsPost extends PostBase {
+  type: "lyrics";
+  content: {
+    title: string;
+    artist: string;
+    lyricsText: string;
+  };
+}
 
-        # Enhanced verification check
-        if provider == "email" and not is_verified:
-            logger.warning("⚠️ [get_verified_user] Email user is not verified")
-            raise HTTPException(status_code=403, detail="Email not verified")
+type FeedPost = AudioPost | XmlPost | MediaPost | LyricsPost;
 
-        # OAuth users (Google, etc.) are automatically verified
-        if provider in ["google", "oauth"]:
-            is_verified = True
+// Map UUIDs to tag names (for display)
+const tagMap: Record<string, string> = {
+  "146fb41a-2f3e-48c7-bef9-01de0279dfd7": "Listener",
+  "b361c6f9-9425-4548-8c07-cb408140c304": "Musician",
+  "5ee121a6-b467-4ead-b3f7-00e1ce6097d5": "Learner",
+};
 
-        logger.info(f"🎉 [get_verified_user] Successfully verified user: {user_data.get('email')} via {auth_source} (Mobile: {is_mobile})")
+// Map tag names to UUIDs (for backend)
+const reverseTagMap: Record<string, string> = {
+  Listener: "146fb41a-2f3e-48c7-bef9-01de0279dfd7",
+  Musician: "b361c6f9-9425-4548-8c07-cb408140c304",
+  Learner: "5ee121a6-b467-4ead-b3f7-00e1ce6097d5",
+};
 
-        return {
-            "id": user_data.get("id"),
-            "sub": user_data.get("sub"),
-            "email": user_data.get("email"),
-            "name": user_data.get("name", ""),
-            "login": user_data.get("login"),
-            "verified": is_verified,
-            "provider": provider,
-            "email_confirmed": is_verified or provider != "email",
-            "auth_source": auth_source,
-            "mobile_detected": is_mobile,
-            # Include any additional fields from user_profiles
-            "avatar_url": user_data.get("avatar_url"),
-            "description": user_data.get("description"),
-            "tag_id": user_data.get("tag_id"),
-        }
+// Helper function to truncate name to 15 characters
+const truncateName = (name: string): string => {
+  if (!name) return "";
+  return name.length > 15 ? name.substring(0, 15) : name;
+};
 
-    except ValueError as ve:
-        error_msg = str(ve).lower()
-        logger.error(f"❌ [get_verified_user] JWT decode error: {str(ve)}")
-        
-        if "expired" in error_msg:
-            if is_mobile:
-                raise HTTPException(
-                    status_code=401, 
-                    detail=f"Token has expired (mobile device detected, clear local storage and re-login)"
-                )
-            else:
-                raise HTTPException(status_code=401, detail="Token has expired")
-        elif "signature" in error_msg:
-            raise HTTPException(status_code=401, detail="Invalid token signature")
-        elif "invalid" in error_msg:
-            raise HTTPException(status_code=401, detail="Invalid token format")
-        else:
-            raise HTTPException(status_code=401, detail="Token validation failed")
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"💥 [get_verified_user] Unexpected error: {str(e)}")
-        
-        # Enhanced error reporting for mobile
-        if is_mobile:
-            raise HTTPException(
-                status_code=401, 
-                detail=f"Authentication failed on mobile device (source: {auth_source}): {str(e)}"
-            )
-        else:
-            raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+// Reactive user and stats state
+const user = reactive<User>({
+  id: undefined,
+  name: "",
+  login: "",
+  avatarUrl:
+    "https://cdn.builder.io/api/v1/image/assets/TEMP/3922534bd59dfe0deae8bd149c0b3cba46e3eb47?placeholderIfAbsent=true&apiKey=04fef95365634cc5973c2029f1fc78f5",
+  biography: "",
+  tag: null,
+});
 
+// Computed property to handle tag display for components
+const displayUser = computed(() => ({
+  ...user,
+  tag: user.tag && tagMap[user.tag] ? tagMap[user.tag] : "Add tag",
+}));
 
-async def get_verified_user_debug(request: Request):
-    """
-    DEBUG VERSION: Enhanced debugging for mobile authentication issues
-    This should be used temporarily for debugging and removed in production
-    """
-    headers = dict(request.headers)
-    cookies = dict(request.cookies)
-    query_params = dict(request.query_params)
-    
-    is_mobile, is_ios, is_safari = detect_mobile_browser(request)
-    user_agent = headers.get("user-agent", "")
+const stats = reactive<Stats>({
+  posts: 0,
+  listeners: 0,
+  listenedTo: 0,
+});
 
-    # Check all possible token sources
-    auth_header = headers.get("authorization", "")
-    bearer_token = auth_header[7:] if auth_header.startswith("Bearer ") else None
-    cookie_token = cookies.get("access_token")
-    query_token = query_params.get("token")
+// Loading states
+const isLoading = ref(false);
+const isLoadingPosts = ref(false);
+const isLoadingMore = ref(false);
+const postsError = ref("");
+const posts = ref<FeedPost[]>([]);
+const hasMore = ref(true);
+const limit = 10;
+const offset = ref(0);
 
-    debug_info = {
-        "device_info": {
-            "user_agent": user_agent,
-            "is_mobile": is_mobile,
-            "is_ios": is_ios,
-            "is_safari": is_safari
+// Enhanced fetch functions with mobile authentication support
+const getAuthHeaders = () => {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json'
+  };
+  
+  // Get token from storage (mobile-first approach)
+  const token = localStorage.getItem('authToken') || 
+               sessionStorage.getItem('authToken') || 
+               localStorage.getItem('auth_backup');
+  
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+    console.log('📱 Using Authorization header for API call');
+  } else {
+    console.log('🍪 No token found, relying on cookies');
+  }
+  
+  return headers;
+};
+
+// Post transformation functions
+const mapUserRole = (
+  tagId: string | null,
+): "Musician" | "Listener" | "Learner" => {
+  const roleMap: Record<string, "Musician" | "Listener" | "Learner"> = {
+    "146fb41a-2f3e-48c7-bef9-01de0279dfd7": "Listener",
+    "b361c6f9-9425-4548-8c07-cb408140c304": "Musician",
+    "5ee121a6-b467-4ead-b3f7-00e1ce6097d5": "Learner",
+  };
+  return roleMap[tagId || ""] || "Listener";
+};
+
+const formatTimestamp = (dateString: string): string => {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+
+  return date.toLocaleDateString();
+};
+
+const transformBackendPost = (backendPost: BackendPost): FeedPost | null => {
+  try {
+    const basePost = {
+      id: backendPost.id,
+      userId: backendPost.user.id,
+      username: backendPost.user.login,
+      displayName: backendPost.user.name,
+      role: mapUserRole(backendPost.user.tag_id),
+      avatarUrl: backendPost.user.avatar_url || "",
+      timestamp: formatTimestamp(backendPost.created_at),
+      likes_count: backendPost.likes_count,
+      comments_count: backendPost.comments_count,
+      user_liked: backendPost.user_liked,
+      caption: backendPost.caption,
+    };
+
+    // Transform media posts
+    if (backendPost.type === "media" && backendPost.media) {
+      return {
+        ...basePost,
+        type: "media",
+        content: {
+          mediaType: "media",
+          items: backendPost.media.map((item) => ({
+            id: item.id,
+            src: item.file_url,
+            type: item.file_type === "image" ? "image" : "video",
+          })),
         },
-        "token_sources": {
-            "authorization_header": {
-                "present": bool(auth_header),
-                "valid_format": auth_header.startswith("Bearer ") if auth_header else False,
-                "token_preview": bearer_token[:50] + "..." if bearer_token else None
-            },
-            "cookie": {
-                "present": bool(cookie_token),
-                "token_preview": cookie_token[:50] + "..." if cookie_token else None
-            },
-            "query_param": {
-                "present": bool(query_token),
-                "token_preview": query_token[:50] + "..." if query_token else None
-            }
-        },
-        "all_headers": {k: v for k, v in headers.items() if k.lower() in ['authorization', 'cookie', 'user-agent']},
-        "all_cookies": list(cookies.keys()),
-        "all_query_params": list(query_params.keys())
+      } as MediaPost;
     }
 
-    try:
-        # Try normal authentication flow
-        user = await get_verified_user(request)
-        debug_info["auth_result"] = {
-            "success": True,
-            "user_id": user.get("id"),
-            "email": user.get("email"),
-            "auth_source": user.get("auth_source"),
-            "mobile_detected": user.get("mobile_detected")
-        }
-        return debug_info
-    except HTTPException as e:
-        debug_info["auth_result"] = {
-            "success": False,
-            "error_code": e.status_code,
-            "error_detail": e.detail
-        }
-        return debug_info
-    except Exception as e:
-        debug_info["auth_result"] = {
-            "success": False,
-            "error": str(e)
-        }
-        return debug_info
+    // Transform audio posts
+    if (backendPost.type === "audio" && backendPost.audio) {
+      return {
+        ...basePost,
+        type: "audio",
+        content: backendPost.audio.map((item) => ({
+          title: item.title,
+          artist: item.artist,
+          coverUrl: item.cover_url || "",
+          duration: item.duration || "0:00",
+          url: item.file_url,
+        })),
+      } as AudioPost;
+    }
 
+    // Transform MusicXML posts
+    if (backendPost.type === "musicxml" && backendPost.musicxml) {
+      return {
+        ...basePost,
+        type: "musicxml",
+        content: backendPost.musicxml.map((item) => ({
+          fileName: item.title,
+          composer: item.composer,
+          downloadUrl: item.file_url,
+        })),
+      } as XmlPost;
+    }
 
-# 🔥 OPTIONAL: Non-async version for backward compatibility
-def get_verified_user_sync(request: Request) -> dict:
-    """
-    Synchronous version of get_verified_user for backward compatibility
-    """
-    import asyncio
+    // Transform lyrics posts
+    if (backendPost.type === "lyrics" && backendPost.lyrics) {
+      return {
+        ...basePost,
+        type: "lyrics",
+        content: {
+          title: backendPost.lyrics.title,
+          artist: backendPost.lyrics.artist,
+          lyricsText: backendPost.lyrics.lyrics_text,
+        },
+      } as LyricsPost;
+    }
+
+    return null;
+  } catch (error) {
+    console.error("❌ Error transforming post:", error);
+    return null;
+  }
+};
+
+// FIXED: Fetch user stats with proper authentication and endpoint
+const fetchUserStats = async () => {
+  try {
+    if (!user.id) {
+      console.warn("No user ID available for stats");
+      return;
+    }
+
+    console.log("🔍 Fetching user stats for user:", user.id);
     
-    try:
-        loop = asyncio.get_running_loop()
-        task = loop.create_task(get_verified_user(request))
-        return loop.run_until_complete(task)
-    except RuntimeError:
-        return asyncio.run(get_verified_user(request))
+    // FIXED: Use the correct endpoint that matches your backend
+    const response = await fetch(`${API_URL}/profile/${user.id}/stats`, {
+      method: 'GET',
+      headers: getAuthHeaders(),
+      credentials: "include", // Keep for cookie fallback
+    });
 
+    if (!response.ok) {
+      console.error(`Stats API error: ${response.status} ${response.statusText}`);
+      throw new Error(`Failed to fetch user stats: ${response.statusText}`);
+    }
 
-# Export functions for use in other modules
-__all__ = ["get_verified_user", "get_verified_user_sync", "get_verified_user_debug", "detect_mobile_browser"]
+    const data = await response.json();
+    console.log("✅ User stats loaded:", data);
+
+    // Your API returns exactly these field names
+    stats.posts = data.posts ?? 0;
+    stats.listeners = data.listeners ?? 0;
+    stats.listenedTo = data.listenedTo ?? 0;
+
+    console.log("📊 Final stats:", {
+      posts: stats.posts,
+      listeners: stats.listeners,
+      listenedTo: stats.listenedTo,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching user stats:", error);
+    // Set default values on error but don't reset if we already have values
+    if (stats.posts === 0 && stats.listeners === 0 && stats.listenedTo === 0) {
+      stats.posts = 0;
+      stats.listeners = 0;
+      stats.listenedTo = 0;
+    }
+  }
+};
+
+// FIXED: Fetch posts with proper authentication
+const fetchPosts = async (loadMore = false) => {
+  if (!user.id) return;
+
+  if (loadMore) {
+    isLoadingMore.value = true;
+  } else {
+    isLoadingPosts.value = true;
+    offset.value = 0;
+  }
+
+  postsError.value = "";
+
+  try {
+    const endpoint = `${API_URL}/posts/user/${user.id}?limit=${limit}&offset=${offset.value}`;
+    console.log("Fetching posts from:", endpoint);
+
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers: getAuthHeaders(),
+      credentials: "include", // Keep for cookie fallback
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const backendPosts: BackendPost[] = await response.json();
+    console.log("Fetched backend posts:", backendPosts);
+
+    const transformedPosts = backendPosts
+      .map(transformBackendPost)
+      .filter(Boolean) as FeedPost[];
+
+    if (loadMore) {
+      posts.value.push(...transformedPosts);
+    } else {
+      posts.value = transformedPosts;
+    }
+
+    hasMore.value = backendPosts.length === limit;
+    offset.value += backendPosts.length;
+
+    // Update posts count in stats
+    if (!loadMore) {
+      stats.posts = backendPosts.length;
+    }
+  } catch (err) {
+    console.error("Error fetching posts:", err);
+    postsError.value =
+      err instanceof Error ? err.message : "Failed to load posts";
+
+    if (!loadMore) {
+      posts.value = [];
+    }
+  } finally {
+    isLoadingPosts.value = false;
+    isLoadingMore.value = false;
+  }
+};
+
+// FIXED: Load user profile with proper authentication
+const loadUserProfile = async () => {
+  isLoading.value = true;
+
+  try {
+    console.log("🔍 Loading user profile...");
+    
+    const response = await fetch(`${API_URL}/profile/me/profile`, {
+      method: 'GET',
+      headers: {
+        ...getAuthHeaders(),
+        "Cache-Control": "no-cache"
+      },
+      credentials: "include", // Keep for cookie fallback
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to fetch profile: ${response.status} ${response.statusText}`,
+      );
+    }
+
+    const data = await response.json();
+    console.log("✅ User profile loaded:", data);
+
+    if (data && data.id) {
+      // Update user reactive object with name truncation
+      Object.assign(user, {
+        id: data.id,
+        name: truncateName(data.name || ""), // Apply name truncation here
+        login: data.login || "",
+        biography: data.description || "",
+        avatarUrl: data.avatar_url || user.avatarUrl, // Keep default if no avatar
+        tag: data.tag_id || null,
+      });
+
+      console.log("👤 User object updated:", user);
+
+      // If the name was truncated, automatically update it on the backend
+      if (data.name && data.name.length > 15) {
+        console.log(
+          "🔄 Name was too long, updating backend with truncated name...",
+        );
+        try {
+          await fetch(`${API_URL}/profile/me`, {
+            method: "PATCH",
+            headers: getAuthHeaders(),
+            credentials: "include",
+            body: JSON.stringify({
+              name: user.name, // Send truncated name
+            }),
+          });
+          console.log("✅ Backend updated with truncated name");
+        } catch (error) {
+          console.error(
+            "❌ Failed to update backend with truncated name:",
+            error,
+          );
+        }
+      }
+
+      // Load user stats and posts after profile is loaded
+      // Make sure to wait for stats before loading posts
+      await fetchUserStats();
+      await fetchPosts();
+    }
+  } catch (err) {
+    console.error("❌ Error loading user profile:", err);
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+// Post functions
+const handleLoadMore = () => {
+  if (!isLoadingMore.value && hasMore.value) {
+    fetchPosts(true);
+  }
+};
+
+const handleRetry = () => {
+  fetchPosts();
+};
+
+// Update user function (called by ProfileContent component) - ENHANCED WITH NAME TRUNCATION
+const updateUser = async (updatedUser: User) => {
+  console.log("🔄 Updating user:", updatedUser);
+
+  // Update the reactive user object with name truncation
+  user.name = truncateName(updatedUser.name);
+  user.login = updatedUser.login;
+  user.biography = updatedUser.biography;
+  user.avatarUrl = updatedUser.avatarUrl;
+
+  // Handle tag conversion from display name to UUID
+  if (updatedUser.tag && updatedUser.tag !== "Add tag") {
+    user.tag = reverseTagMap[updatedUser.tag] || updatedUser.tag;
+  } else {
+    user.tag = null;
+  }
+
+  console.log("👤 User updated to:", user);
+
+  // Refresh stats and posts after profile update
+  await fetchUserStats();
+  await fetchPosts();
+};
+
+// Add this debug function to test authentication
+const testAuthentication = async () => {
+  try {
+    console.log("🔍 Testing authentication...");
+    
+    const response = await fetch(`${API_URL}/profile/debug/auth-info`, {
+      method: 'GET',
+      headers: getAuthHeaders(),
+      credentials: "include",
+    });
+
+    const debugInfo = await response.json();
+    console.log("🔍 Auth Debug Info:", debugInfo);
+    
+    return debugInfo;
+  } catch (error) {
+    console.error("❌ Auth test failed:", error);
+    return null;
+  }
+};
+
+// Load profile on component mount
+onMounted(() => {
+  loadUserProfile();
+});
+</script>
+
+<style scoped>
+.inter-font {
+  font-family: "Inter", sans-serif;
+}
+
+/* Center the content container */
+main {
+  display: flex;
+  justify-content: center;
+}
+</style>
