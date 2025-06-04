@@ -17,22 +17,65 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def get_safari_compatible_cookie_settings():
+def detect_mobile_browser(request: Request) -> tuple[bool, bool, bool]:
     """
-    MOBILE-COMPATIBLE: Enhanced cookie settings for all mobile browsers
+    Enhanced mobile detection for better cookie handling
+    Returns: (is_mobile, is_ios, is_safari)
+    """
+    user_agent = request.headers.get("user-agent", "").lower()
+    
+    # Mobile detection
+    mobile_keywords = ['mobile', 'android', 'iphone', 'ipad', 'ipod', 'blackberry', 'windows phone']
+    is_mobile = any(keyword in user_agent for keyword in mobile_keywords)
+    
+    # iOS detection
+    is_ios = any(keyword in user_agent for keyword in ['iphone', 'ipad', 'ipod'])
+    
+    # Safari detection (but not Chrome on iOS)
+    is_safari = 'safari' in user_agent and 'chrome' not in user_agent and 'crios' not in user_agent
+    
+    return is_mobile, is_ios, is_safari
+
+
+def get_mobile_compatible_cookie_settings(request: Request):
+    """
+    MOBILE-COMPATIBLE: Dynamic cookie security settings based on device
     """
     environment = os.getenv("ENVIRONMENT", "production")
-
+    is_mobile, is_ios, is_safari = detect_mobile_browser(request)
+    
+    logger.info(f"🔍 Cookie settings - Mobile: {is_mobile}, iOS: {is_ios}, Safari: {is_safari}")
+    
     if environment == "production":
-        return {
-            "httponly": True,
-            "secure": True,  # Required for HTTPS
-            "samesite": "none",  # Essential for cross-origin
-            "max_age": 24 * 3600,
-            "path": "/",
-            # REMOVED domain setting for better mobile compatibility
-        }
+        if is_ios and is_safari:
+            # iOS Safari has issues with SameSite=None
+            return {
+                "httponly": True,
+                "secure": True,  # Still need HTTPS
+                "samesite": "lax",  # Better for iOS Safari
+                "max_age": 24 * 3600,
+                "path": "/",
+            }
+        elif is_mobile:
+            # Other mobile browsers
+            return {
+                "httponly": True,
+                "secure": True,
+                "samesite": "none",  # Cross-origin support
+                "max_age": 24 * 3600,
+                "path": "/",
+            }
+        else:
+            # Desktop browsers
+            return {
+                "httponly": True,
+                "secure": True,
+                "samesite": "none",
+                "max_age": 24 * 3600,
+                "path": "/",
+            }
     else:
+        # Development settings
         return {
             "httponly": True,
             "secure": False,
@@ -42,25 +85,41 @@ def get_safari_compatible_cookie_settings():
         }
 
 
-def add_safari_cors_headers(response: Response):
+def add_mobile_cors_headers(response: Response, request: Request):
     """
-    Add Safari-specific CORS headers for better cookie support
+    Add mobile-specific CORS headers for better cookie support
     """
+    is_mobile, is_ios, is_safari = detect_mobile_browser(request)
+    
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Allow-Origin"] = "https://techtuners-tt.github.io"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Cookie"
     response.headers["Access-Control-Expose-Headers"] = "Set-Cookie"
+    
+    # iOS Safari specific headers
+    if is_ios and is_safari:
+        response.headers["Vary"] = "Cookie, Authorization"
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    
     return response
 
 
 @router.get("/login")
-def login(redirect_to: Optional[str] = None):
+def login(request: Request, redirect_to: Optional[str] = None, mobile: Optional[str] = None):
     """
-    SAFARI-COMPATIBLE: OAuth initiation with better error handling
+    MOBILE-COMPATIBLE: OAuth initiation with enhanced mobile support
     """
     try:
-        # Default redirect for Safari compatibility
+        is_mobile_device, is_ios, is_safari = detect_mobile_browser(request)
+        
+        # Override mobile detection if explicitly specified
+        if mobile == "true":
+            is_mobile_device = True
+        
+        logger.info(f"🔍 OAuth initiation - Mobile: {is_mobile_device}, iOS: {is_ios}, Safari: {is_safari}")
+        
+        # Default redirect for mobile compatibility
         default_redirect = "https://techtuners-tt.github.io/SelfSound/#/home"
 
         params = {
@@ -70,18 +129,21 @@ def login(redirect_to: Optional[str] = None):
             "scope": "openid email profile",
             "access_type": "offline",
             "prompt": "consent",
-            # Add include_granted_scopes for better Safari compatibility
+            # Enhanced mobile compatibility
             "include_granted_scopes": "true"
         }
 
-        if redirect_to:
-            # Ensure the redirect URL is safe and from your domain
-            if redirect_to.startswith("https://techtuners-tt.github.io"):
-                params["state"] = urllib.parse.quote(redirect_to)
-            else:
-                params["state"] = urllib.parse.quote(default_redirect)
-        else:
-            params["state"] = urllib.parse.quote(default_redirect)
+        # Enhanced state parameter with mobile info
+        state_data = {
+            "redirect_to": redirect_to or default_redirect,
+            "mobile": "1" if is_mobile_device else "0",
+            "ios": "1" if is_ios else "0",
+            "safari": "1" if is_safari else "0"
+        }
+        
+        # Encode state as URL parameters
+        state_params = urllib.parse.urlencode(state_data)
+        params["state"] = state_params
 
         url = f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
 
@@ -90,14 +152,14 @@ def login(redirect_to: Optional[str] = None):
 
     except Exception as e:
         logger.error(f"OAuth login error: {str(e)}")
-        # Fallback redirect for Safari
+        # Fallback redirect for mobile
         return RedirectResponse(url="https://techtuners-tt.github.io/SelfSound/#/sign-in?error=oauth_error")
 
 
 @router.get("/callback")
 async def auth_callback(request: Request):
     """
-    SAFARI-COMPATIBLE: Enhanced callback with better error handling and cookie settings
+    MOBILE-COMPATIBLE: Enhanced callback with device-specific handling
     """
     error = request.query_params.get("error")
     code = request.query_params.get("code")
@@ -106,13 +168,23 @@ async def auth_callback(request: Request):
     # Default safe redirect
     default_redirect = "https://techtuners-tt.github.io/SelfSound/#/home"
 
-    # Decode the state parameter safely
-    try:
-        redirect_to = urllib.parse.unquote(state) if state else default_redirect
-        # Ensure redirect is to your domain (security)
-        if not redirect_to.startswith("https://techtuners-tt.github.io"):
-            redirect_to = default_redirect
-    except Exception:
+    # Parse state parameters
+    state_data = {}
+    if state:
+        try:
+            state_data = dict(urllib.parse.parse_qsl(state))
+        except Exception as e:
+            logger.error(f"Failed to parse state: {e}")
+
+    redirect_to = state_data.get("redirect_to", default_redirect)
+    is_mobile_callback = state_data.get("mobile") == "1"
+    is_ios_callback = state_data.get("ios") == "1"
+    is_safari_callback = state_data.get("safari") == "1"
+    
+    logger.info(f"📱 OAuth callback - Mobile: {is_mobile_callback}, iOS: {is_ios_callback}, Safari: {is_safari_callback}")
+
+    # Ensure redirect is to your domain (security)
+    if not redirect_to.startswith("https://techtuners-tt.github.io"):
         redirect_to = default_redirect
 
     # Handle OAuth errors
@@ -159,7 +231,7 @@ async def auth_callback(request: Request):
             "sub": sub,
             "provider": "google",
             "verified": True,
-            "created_at": datetime.utcnow().isoformat()  # Add timestamp
+            "created_at": datetime.utcnow().isoformat()
         }
 
         # Check if user exists
@@ -197,23 +269,27 @@ async def auth_callback(request: Request):
         # Generate JWT token
         jwt_token = generate_jwt(id_info)
 
-        # SAFARI FIX: Use Safari-compatible cookie settings
-        cookie_settings = get_safari_compatible_cookie_settings()
+        # Enhanced mobile-compatible cookie settings
+        cookie_settings = get_mobile_compatible_cookie_settings(request)
 
-        # Create response with Safari-compatible headers
+        # Enhanced mobile handling
+        if is_mobile_callback:
+            # For mobile, always add token to URL
+            separator = "&" if "?" in redirect_to else "?"
+            redirect_to = f"{redirect_to}{separator}token={jwt_token}"
+            logger.info(f"📱 Mobile OAuth: Adding token to redirect URL")
+
         response = RedirectResponse(url=redirect_to, status_code=302)
+        response = add_mobile_cors_headers(response, request)
 
-        # SAFARI FIX: Add CORS headers before setting cookies
-        response = add_safari_cors_headers(response)
-
-        # Set the cookie with Safari-compatible settings
+        # Set cookie with device-appropriate settings
         response.set_cookie(
             key="access_token",
             value=jwt_token,
             **cookie_settings
         )
 
-        logger.info(f"Google authentication successful for {email}")
+        logger.info(f"✅ Google authentication successful for {email} (Mobile: {is_mobile_callback})")
         return response
 
     except ValueError as ve:
@@ -230,7 +306,7 @@ async def auth_callback(request: Request):
 
 async def exchange_code_for_token(code: str):
     """
-    SAFARI-COMPATIBLE: Enhanced token exchange with better error handling
+    MOBILE-COMPATIBLE: Enhanced token exchange with better error handling
     """
     token_url = "https://oauth2.googleapis.com/token"
     data = {
@@ -241,7 +317,7 @@ async def exchange_code_for_token(code: str):
         "grant_type": "authorization_code"
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:  # Add timeout
+    async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             logger.info("Exchanging OAuth code for tokens")
             response = await client.post(token_url, data=data)
@@ -262,9 +338,20 @@ async def exchange_code_for_token(code: str):
 @router.get("/me/raw")
 def get_current_user_raw(request: Request):
     """
-    SAFARI-COMPATIBLE: Enhanced user info endpoint
+    MOBILE-COMPATIBLE: Enhanced user info endpoint
     """
-    token = request.cookies.get("access_token")
+    # Check Authorization header first (mobile preference)
+    token = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        logger.info("📱 Using Authorization header token")
+    
+    # Fallback to cookie
+    if not token:
+        token = request.cookies.get("access_token")
+        logger.info("🍪 Using cookie token")
+
     if not token:
         logger.warning("No access token found in request")
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -273,9 +360,9 @@ def get_current_user_raw(request: Request):
         user_info = decode_jwt(token, verify_aud_iss=False)
         logger.info("Successfully retrieved user info from token")
 
-        # Create response with Safari-compatible headers
+        # Create response with mobile-compatible headers
         response = JSONResponse(content={"user": user_info})
-        response = add_safari_cors_headers(response)
+        response = add_mobile_cors_headers(response, request)
         return response
 
     except Exception as e:
@@ -284,15 +371,21 @@ def get_current_user_raw(request: Request):
 
 
 @router.post("/logout")
-async def logout():
+async def logout(request: Request):
     """
-    SAFARI-COMPATIBLE: Enhanced logout with comprehensive cookie cleanup
+    MOBILE-COMPATIBLE: Enhanced logout with comprehensive cookie cleanup
     """
     try:
-        cookie_settings = get_safari_compatible_cookie_settings()
+        is_mobile, is_ios, is_safari = detect_mobile_browser(request)
+        logger.info(f"📱 Logout - Mobile: {is_mobile}, iOS: {is_ios}, Safari: {is_safari}")
+        
+        cookie_settings = get_mobile_compatible_cookie_settings(request)
 
-        response = JSONResponse(content={"message": "Logged out successfully"})
-        response = add_safari_cors_headers(response)
+        response = JSONResponse(content={
+            "message": "Logged out successfully",
+            "mobile_detected": is_mobile
+        })
+        response = add_mobile_cors_headers(response, request)
 
         # Primary cookie deletion with current settings
         response.delete_cookie(
@@ -302,13 +395,12 @@ async def logout():
             samesite=cookie_settings["samesite"]
         )
 
-        # SAFARI FIX: Comprehensive cleanup with multiple configurations
-        # This ensures cookies are removed regardless of how they were set
+        # Enhanced cleanup with multiple configurations
         cleanup_configs = [
             {"path": "/", "secure": True, "samesite": "none"},  # Production HTTPS
+            {"path": "/", "secure": True, "samesite": "lax"},   # iOS Safari friendly
             {"path": "/", "secure": False, "samesite": "lax"},  # Development HTTP
-            {"path": "/", "secure": True, "samesite": "lax"},  # Mixed scenario
-            {"path": "/", "secure": False, "samesite": "none"},  # Edge case
+            {"path": "/", "secure": False, "samesite": "none"}, # Edge case
             {"path": "/"},  # Basic cleanup
         ]
 
@@ -326,24 +418,37 @@ async def logout():
         return JSONResponse(content={"message": "Logged out"})
 
 
-# ADDITIONAL SAFARI DEBUGGING ENDPOINT (REMOVE IN PRODUCTION)
-@router.get("/debug/safari")
-def debug_safari_compatibility(request: Request):
+@router.get("/debug/mobile-oauth")
+def debug_mobile_oauth(request: Request):
     """
-    DEBUG: Check Safari compatibility (remove in production)
+    DEBUG: Check mobile OAuth compatibility
     """
+    is_mobile, is_ios, is_safari = detect_mobile_browser(request)
     user_agent = request.headers.get("user-agent", "")
-    is_safari = "Safari" in user_agent and "Chrome" not in user_agent
-
-    cookie_settings = get_safari_compatible_cookie_settings()
+    
+    cookie_settings = get_mobile_compatible_cookie_settings(request)
 
     return {
-        "user_agent": user_agent,
-        "is_safari": is_safari,
-        "cookie_settings": cookie_settings,
-        "cors_headers_needed": True,
-        "https_required": cookie_settings.get("secure", False),
-        "samesite_setting": cookie_settings.get("samesite"),
-        "oauth_redirect_uri": GOOGLE_REDIRECT_URI,
-        "frontend_origin": "https://techtuners-tt.github.io"
+        "device_detection": {
+            "user_agent": user_agent,
+            "is_mobile": is_mobile,
+            "is_ios": is_ios,
+            "is_safari": is_safari
+        },
+        "oauth_config": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "frontend_origin": "https://techtuners-tt.github.io"
+        },
+        "cookie_config": {
+            "recommended_settings": cookie_settings,
+            "https_required": cookie_settings.get("secure", False),
+            "samesite_setting": cookie_settings.get("samesite"),
+            "mobile_optimized": is_mobile
+        },
+        "cors_headers": {
+            "access_control_allow_credentials": "true",
+            "access_control_allow_origin": "https://techtuners-tt.github.io",
+            "mobile_specific_headers": is_ios and is_safari
+        }
     }
