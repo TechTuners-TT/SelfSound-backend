@@ -28,7 +28,8 @@ def detect_mobile_browser(request: Request) -> tuple[bool, bool, bool]:
 
 async def get_verified_user(request: Request):
     """
-    Enhanced mobile-compatible authentication with improved error handling
+    🔥 ENHANCED: Mobile-compatible authentication with improved error handling
+    Supports both Authorization headers (mobile) AND cookies (web)
     """
     token = None
     auth_source = None
@@ -43,20 +44,21 @@ async def get_verified_user(request: Request):
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ")[1]
         auth_source = "header"
-        logger.info(f"📱 MOBILE AUTH: Found Bearer token in Authorization header: {token[:50]}...")
+        logger.info(f"📱 MOBILE AUTH: Found Bearer token in Authorization header")
 
     # PRIORITY 2: Fallback to cookies (web browsers)
     if not token:
         token = request.cookies.get("access_token")
-        auth_source = "cookie"
-        logger.info(f"🍪 WEB AUTH: Access token from cookies: {token[:50] if token else 'None'}...")
+        if token:
+            auth_source = "cookie"
+            logger.info(f"🍪 WEB AUTH: Access token from cookies")
 
     # PRIORITY 3: Check for token in query parameters (mobile OAuth callback)
     if not token:
         token = request.query_params.get("token")
         if token:
             auth_source = "query_param"
-            logger.info(f"🔗 OAUTH AUTH: Token from query parameter: {token[:50]}...")
+            logger.info(f"🔗 OAUTH AUTH: Token from query parameter")
 
     if not token:
         logger.warning(f"❌ [get_verified_user] No token found (Mobile: {is_mobile}, iOS Safari: {is_ios and is_safari})")
@@ -75,7 +77,7 @@ async def get_verified_user(request: Request):
     try:
         # Enhanced JWT decoding with better error handling
         payload = decode_jwt(token)
-        logger.info(f"🔓 [get_verified_user] Decoded JWT payload: {payload}")
+        logger.info(f"🔓 [get_verified_user] Decoded JWT payload successfully")
 
         user_sub = payload.get("sub")
         user_email = payload.get("email")
@@ -87,26 +89,58 @@ async def get_verified_user(request: Request):
 
         user_resp = None
 
-        # STRATEGY 1: Try to find user by sub first (preferred for OAuth users)
-        if user_sub:
+        # 🔥 STRATEGY 1: Try user_profiles table first (your current structure)
+        if user_email:
             try:
-                user_resp = supabase.table("users").select("*").eq("sub", user_sub).single().execute()
-                logger.info(f"🔍 [get_verified_user] Supabase response data (by sub): {user_resp.data}")
+                # Extract login from email for user_profiles lookup
+                login = user_email.split("@")[0]
+                user_resp = supabase.from_("user_profiles").select("*").eq("login", login).single().execute()
+                logger.info(f"🔍 [get_verified_user] Found user in user_profiles table: {login}")
+                
+                if user_resp.data:
+                    # Convert user_profiles format to expected format
+                    profile_data = user_resp.data
+                    return {
+                        "id": profile_data.get("id"),
+                        "sub": user_sub,
+                        "email": user_email,
+                        "name": profile_data.get("name", ""),
+                        "login": profile_data.get("login", login),
+                        "verified": True,  # OAuth users are verified
+                        "provider": "google" if "google" in str(payload) else "email",
+                        "email_confirmed": True,
+                        "auth_source": auth_source,
+                        "mobile_detected": is_mobile,
+                        # Include profile-specific fields
+                        "avatar_url": profile_data.get("avatar_url"),
+                        "description": profile_data.get("description"),
+                        "tag_id": profile_data.get("tag_id"),
+                    }
             except Exception as e:
-                logger.warning(f"⚠️ [get_verified_user] Sub lookup failed: {str(e)}")
+                logger.warning(f"⚠️ [get_verified_user] user_profiles lookup failed: {str(e)}")
                 user_resp = None
 
-        # STRATEGY 2: Fallback to email if sub lookup failed
-        if (user_resp is None or user_resp.data is None) and user_email:
-            try:
-                user_resp = supabase.table("users").select("*").eq("email", user_email).single().execute()
-                logger.info(f"🔍 [get_verified_user] Supabase fallback response data (by email): {user_resp.data}")
-            except Exception as e:
-                logger.warning(f"⚠️ [get_verified_user] Email lookup failed: {str(e)}")
-                user_resp = None
+        # 🔥 STRATEGY 2: Fallback to users table (if exists)
+        if user_resp is None or user_resp.data is None:
+            if user_sub:
+                try:
+                    user_resp = supabase.table("users").select("*").eq("sub", user_sub).single().execute()
+                    logger.info(f"🔍 [get_verified_user] Found user in users table by sub")
+                except Exception as e:
+                    logger.warning(f"⚠️ [get_verified_user] Sub lookup failed: {str(e)}")
+                    user_resp = None
+
+            # Try by email if sub failed
+            if (user_resp is None or user_resp.data is None) and user_email:
+                try:
+                    user_resp = supabase.table("users").select("*").eq("email", user_email).single().execute()
+                    logger.info(f"🔍 [get_verified_user] Found user in users table by email")
+                except Exception as e:
+                    logger.warning(f"⚠️ [get_verified_user] Email lookup failed: {str(e)}")
+                    user_resp = None
 
         if user_resp is None or user_resp.data is None:
-            logger.error("❌ [get_verified_user] User not found in database")
+            logger.error("❌ [get_verified_user] User not found in any table")
             
             # Enhanced error for mobile debugging
             if is_mobile:
@@ -137,11 +171,16 @@ async def get_verified_user(request: Request):
             "sub": user_data.get("sub"),
             "email": user_data.get("email"),
             "name": user_data.get("name", ""),
+            "login": user_data.get("login"),
             "verified": is_verified,
             "provider": provider,
             "email_confirmed": is_verified or provider != "email",
-            "auth_source": auth_source,  # Add source info for debugging
-            "mobile_detected": is_mobile,  # Add mobile detection info
+            "auth_source": auth_source,
+            "mobile_detected": is_mobile,
+            # Include any additional fields from user_profiles
+            "avatar_url": user_data.get("avatar_url"),
+            "description": user_data.get("description"),
+            "tag_id": user_data.get("tag_id"),
         }
 
     except ValueError as ve:
@@ -247,3 +286,22 @@ async def get_verified_user_debug(request: Request):
             "error": str(e)
         }
         return debug_info
+
+
+# 🔥 OPTIONAL: Non-async version for backward compatibility
+def get_verified_user_sync(request: Request) -> dict:
+    """
+    Synchronous version of get_verified_user for backward compatibility
+    """
+    import asyncio
+    
+    try:
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(get_verified_user(request))
+        return loop.run_until_complete(task)
+    except RuntimeError:
+        return asyncio.run(get_verified_user(request))
+
+
+# Export functions for use in other modules
+__all__ = ["get_verified_user", "get_verified_user_sync", "get_verified_user_debug", "detect_mobile_browser"]
